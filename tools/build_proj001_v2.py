@@ -63,9 +63,9 @@ SCENES = [
          trans=("fadewhite", 0.3), audio="B"),
     # подписи «Скорость → ∞ / Энергия конечна» читаются, затем наезд на нить (зона без надписей)
     dict(line="vortex", lead=0.15, tail=0.5,
-         shots=[dict(img=5, keys="dive", sharpen=True, target=(3.0, 0.5, 0.30))], trans=("fade", 0.3)),
+         shots=[dict(img=5, keys="dive", sharpen=True, target=(3.0, 0.5, 0.30), dive_last=2.4)], trans=("fade", 0.3)),
     dict(line="agents", lead=0.15, shots=[dict(video="B", start=7.0, end=8.3),
-                                          dict(img=6, keys="dive", target=(2.3, 0.5, 0.465))],
+                                          dict(img=6, keys="dive", target=(2.3, 0.5, 0.465), dive_last=1.0)],
          trans=("circleopen", 0.4), audio="B"),
     dict(line="lean", lead=0.15, shots=[dict(video="B", start=8.3, end=10.6),
                                         dict(img=7, zoom=(1.0, 1.12, (0.5, 0.5), (0.5, 0.53)))],
@@ -121,10 +121,10 @@ def video_shot(shot: dict, duration: float, out: Path) -> None:
     shot["slow"] = slow
 
 
-def dive_keys(duration: float, target: tuple, hold: float) -> list[tuple]:
-    """Кадр почти стоит `hold` секунд (читаются надписи), затем наезд к цели."""
+def dive_keys(duration: float, target: tuple, dive_last: float) -> list[tuple]:
+    """Кадр почти стоит (читаются надписи, пока диктор их произносит), наезд — последние `dive_last` секунд."""
     z, cx, cy = target
-    hold = min(hold, duration * 0.6)
+    hold = max(0.5, duration - dive_last)
     return [(0, 1.0, 0.5, 0.5), (hold, 1.03, 0.5, 0.5), (duration + 0.4, z, cx, cy)]
 
 
@@ -192,7 +192,7 @@ def main() -> None:
         else:
             spec = dict(sh)
             if sh.get("keys") == "dive":
-                spec["keys"] = dive_keys(sh["dur"], sh["target"], hold=2.2 if sh["img"] == 5 else 1.4)
+                spec["keys"] = dive_keys(sh["dur"], sh["target"], sh["dive_last"])
             scene_clip(spec, length, clip, shift=d_in)
         clips.append(clip)
 
