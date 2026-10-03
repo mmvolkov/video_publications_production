@@ -35,9 +35,11 @@ WORK = OUT / "work_v2"
 CACHE = OUT / "voice_v2"  # синтезированные фразы — переживают пересборку
 VIDEO_A = SRC / "gemini_generated_video_0883c3dd.mp4"
 VIDEO_B = SRC / "gemini_generated_video_bcfd18b7.mp4"
-# Что говорит голос в ролике B (Yandex STT + расставленная пунктуация) — затравка для клонирования
-SAMPLE_TEXT = ("ИИ решил уравнение Навье — Стокса, задачу тысячелетия. Жидкость может взрываться, "
-               "образуя сингулярность. Это доказали агенты ИИ. Прорыв века в науке.")
+# Голос — пресет gemini (voices/gemini.wav + .json: образец из ролика B и его расшифровка).
+# Если пресет установлен на сервере TTS — озвучиваем там (GPU, тот же голос, что на сайте),
+# иначе клонируем локально через CosyVoice3 (tools/clone_voice.py).
+PRESET = ROOT / "voices" / "gemini"
+VOICE_NAME = "gemini"
 
 CV_PYTHON = os.getenv("CV_PYTHON", "/home/user/cv/venv/bin/python")
 CV_ROOT = Path(os.getenv("CV_ROOT", "/home/user/cv/cosyvoice"))
@@ -81,7 +83,7 @@ INNER = ("fade", 0.15)  # переход между кадрами внутри 
 def clean_voice_sample() -> Path:
     """Голос из ролика B без музыки (Demucs) → моно 24 кГц без тишины по краям."""
     sample = CACHE / "sample_voice.wav"
-    if sample.exists():
+    if sample.exists() and (CACHE / "b_music.wav").exists():
         return sample
     sep = WORK / "demucs"
     full = WORK / "b_audio.wav"
@@ -98,12 +100,22 @@ def clean_voice_sample() -> Path:
 
 
 def synth_voice(lines: dict[str, str]) -> dict[str, Path]:
-    sample = clean_voice_sample()
+    corp = tts.PROVIDERS["corp"]
+    if corp.available() and any(v["id"] == VOICE_NAME for v in corp.voice_list()):
+        print("  голос: пресет gemini на сервере TTS", flush=True)
+        return {key: tts.synthesize(text, "corp", VOICE_NAME).path for key, text in lines.items()}
+    print("  голос: пресет gemini, локальное клонирование (на сервере пресета нет)", flush=True)
+    return clone_locally(lines)
+
+
+def clone_locally(lines: dict[str, str]) -> dict[str, Path]:
+    preset = json.loads(PRESET.with_suffix(".json").read_text(encoding="utf-8"))
+    sample = PRESET.with_suffix(".wav")
     lines_file = WORK / "lines.json"
     lines_file.write_text(json.dumps(lines, ensure_ascii=False), encoding="utf-8")
     env = dict(os.environ, PYTHONPATH=f"{CV_ROOT}:{CV_ROOT / 'third_party' / 'Matcha-TTS'}")
     subprocess.run([CV_PYTHON, str(ROOT / "tools" / "clone_voice.py"), "--model", CV_MODEL, "--sample", str(sample),
-                    "--prompt", SAMPLE_TEXT, "--lines", str(lines_file), "--out", str(CACHE)], check=True, env=env)
+                    "--prompt", preset["prompt_text"], "--lines", str(lines_file), "--out", str(CACHE)], check=True, env=env)
     manifest = json.loads((CACHE / "manifest.json").read_text(encoding="utf-8"))
     return {key: Path(manifest[key]) for key in lines}
 
@@ -134,6 +146,7 @@ def main() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
     CACHE.mkdir(parents=True, exist_ok=True)
 
+    clean_voice_sample()  # музыка ролика B без голоса — для звука под его кадрами
     voices = synth_voice(cfg["lines"])
 
     # 1. Раскладка: сцена = lead + речь + tail; кадры внутри сцены
