@@ -262,7 +262,7 @@ def render_reel(
                 continue
             progress(0.02 + 0.13 * i / len(scenes), f"Озвучка {i + 1} из {len(scenes)}")
             speech = tts.synthesize(text, voiceover.get("provider", ""), voiceover.get("voice", ""),
-                                    float(voiceover.get("speed") or 1.0))
+                                    float(voiceover.get("speed") or 1.0), voiceover.get("instruct"))
             voices[i], speeches[i] = speech.path, speech
             # сцена с озвучкой длится ровно столько, сколько говорит диктор (+ паузы)
             durations[i] = max(1.5, speech.duration + VOICE_LEAD + VOICE_TAIL)

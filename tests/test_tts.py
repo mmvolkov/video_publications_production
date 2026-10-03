@@ -213,3 +213,106 @@ def test_yandex_and_elevenlabs_request_shape(monkeypatch, tmp_path):
     assert seen[1]["url"].startswith("https://api.elevenlabs.io/v1/text-to-speech/voice123")
     assert seen[1]["headers"]["xi-api-key"] == "el"
     assert seen[1]["json"]["voice_settings"]["speed"] == 1.2  # ElevenLabs принимает 0.7–1.2
+
+
+# ---------- голоса с сервера и instruct ----------
+
+@pytest.fixture()
+def corp(monkeypatch):
+    monkeypatch.setenv("CORP_TTS_API_KEY", "k")
+    monkeypatch.setenv("CORP_TTS_BASE_URL", "http://tts:8000/v1")
+    monkeypatch.delenv("CORP_TTS_VOICES", raising=False)
+    provider = tts.CorpProvider()
+    monkeypatch.setitem(tts.PROVIDERS, "corp", provider)
+    return provider
+
+
+def test_corp_voices_come_from_server(corp, monkeypatch):
+    calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers))
+        return httpx.Response(200, request=httpx.Request("GET", url), json={"voices": [
+            {"name": "anastasiya", "title": "Анастасия", "instruct": "speak calmly", "prompt_text": "…"},
+            {"name": "irina", "title": "Ирина — новый пресет", "instruct": ""},
+        ]})
+
+    monkeypatch.setattr(tts.httpx, "get", fake_get)
+    voices = corp.voice_list()
+    assert voices == [{"id": "anastasiya", "name": "Анастасия", "instruct": "speak calmly"},
+                      {"id": "irina", "name": "Ирина — новый пресет", "instruct": ""}]
+    assert calls == [("http://tts:8000/v1/voices", {"Authorization": "Bearer k"})]
+    corp.voice_list()
+    assert len(calls) == 1  # кеш на минуту
+    described = next(p for p in tts.describe()["providers"] if p["id"] == "corp")
+    assert described["instruct"] is True and described["voices"][1]["id"] == "irina"
+
+
+def test_corp_voices_fallback_when_server_down(corp, monkeypatch):
+    def down(*a, **k):
+        raise httpx.ConnectError("нет связи")
+
+    monkeypatch.setattr(tts.httpx, "get", down)
+    assert [v["id"] for v in corp.voice_list()] == ["anastasiya", "dmitry", "svetlana"]
+
+
+def test_corp_voices_env_override_skips_server(corp, monkeypatch):
+    monkeypatch.setenv("CORP_TTS_VOICES", "x:Икс")
+    monkeypatch.setattr(tts.httpx, "get", lambda *a, **k: pytest.fail("не должен ходить на сервер"))
+    corp.voices = tts._parse_voices("x:Икс", [])
+    assert corp.voice_list() == [{"id": "x", "name": "Икс", "instruct": ""}]
+
+
+@pytest.mark.parametrize("instruct, expected", [
+    (None, "absent"),  # из пресета голоса
+    ("", ""),          # явно без инструкции
+    ("speak energetically", "speak energetically"),
+])
+def test_corp_sends_instruct(corp, monkeypatch, tmp_path, instruct, expected):
+    seen = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None, **_):
+        seen.update(json)
+        return httpx.Response(200, content=b"RIFF")
+
+    monkeypatch.setattr(tts.httpx, "post", fake_post)
+    corp.synthesize("Привет", "anastasiya", 1.0, tmp_path / "a.wav", instruct=instruct)
+    assert seen.get("instruct", "absent") == expected
+
+
+def test_instruct_must_be_english():
+    with pytest.raises(tts.TTSError, match="по-английски"):
+        tts.check_instruct("говори бодро")
+    assert tts.check_instruct("  speak   calmly ") == "speak calmly"
+    assert tts.check_instruct(None) is None and tts.check_instruct("") == ""
+
+
+def test_instruct_is_part_of_cache_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    seen = []
+
+    class InstructFake(FakeProvider):
+        def __init__(self):
+            super().__init__()
+            self.id, self.supports_instruct = "ifake", True
+
+        def synthesize(self, text, voice, speed, out, instruct=None):
+            seen.append(instruct)
+            return super().synthesize(text, voice, speed, out)
+
+    monkeypatch.setitem(tts.PROVIDERS, "ifake", InstructFake())
+    for instruct in (None, "", "speak calmly", None):
+        tts.synthesize("Привет", "ifake", "v1", 1.0, instruct)
+    assert seen == [None, "", "speak calmly"]  # повтор None взят из кеша
+    # провайдер без поддержки instruct просто игнорирует его
+    monkeypatch.setitem(tts.PROVIDERS, "fake", FakeProvider())
+    tts.synthesize("Привет", "fake", "v1", 1.0, "speak calmly")
+
+
+def test_api_rejects_russian_instruct(fake):
+    with TestClient(main.app) as client:
+        pid = client.post("/api/projects", json={"title": "x"}).json()["id"]
+        client.post(f"/api/projects/{pid}/notes", json={"text": "Текст"})
+        r = client.post(f"/api/projects/{pid}/reels", json={"voiceover": True, "tts_provider": "fake",
+                                                             "tts_instruct": "бодро"})
+        assert r.status_code == 400 and "по-английски" in r.json()["detail"]

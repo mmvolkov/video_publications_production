@@ -91,6 +91,8 @@ class VoiceOptions(BaseModel):
     tts_provider: str = Field("", max_length=40)
     tts_voice: str = Field("", max_length=120)
     tts_speed: float = Field(1.0, ge=0.5, le=2.0)
+    # Подача голоса (только свой TTS): None — из пресета голоса, "" — без инструкции.
+    tts_instruct: Optional[str] = Field(None, max_length=300)
     karaoke: bool = True
 
 
@@ -121,6 +123,7 @@ class PreviewIn(BaseModel):
     provider: str = Field(..., max_length=40)
     voice: str = Field("", max_length=120)
     speed: float = Field(1.0, ge=0.5, le=2.0)
+    instruct: Optional[str] = Field(None, max_length=300)
     text: str = Field("Привет! Так будет звучать озвучка вашего рилса.", min_length=1, max_length=300)
 
 
@@ -141,6 +144,10 @@ def _check_voice(opts: VoiceOptions) -> None:
         raise HTTPException(400, "Неизвестный провайдер озвучки")
     if not provider.available():
         raise HTTPException(400, f"Провайдер «{provider.name}» не настроен — добавьте ключ в .env")
+    try:
+        tts.check_instruct(opts.tts_instruct)
+    except tts.TTSError as exc:
+        raise HTTPException(400, str(exc))
 
 
 def _item_or_404(items: list[dict], item_id: str, what: str) -> dict:
@@ -171,7 +178,7 @@ def tts_providers() -> dict:
 def tts_preview(body: PreviewIn) -> FileResponse:
     """Прослушать голос до сборки рилса."""
     try:
-        speech = tts.synthesize(body.text, body.provider, body.voice, body.speed)
+        speech = tts.synthesize(body.text, body.provider, body.voice, body.speed, body.instruct)
     except tts.TTSError as exc:
         raise HTTPException(400, str(exc))
     return FileResponse(speech.path, media_type="audio/mpeg" if speech.path.suffix == ".mp3" else "audio/wav")

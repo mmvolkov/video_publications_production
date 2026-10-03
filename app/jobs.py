@@ -78,6 +78,7 @@ def voiceover_settings(options: dict) -> dict | None:
         "provider": options.get("tts_provider") or tts.default_provider(),
         "voice": options.get("tts_voice") or "",
         "speed": options.get("tts_speed") or 1.0,
+        "instruct": options.get("tts_instruct"),
     }
 
 

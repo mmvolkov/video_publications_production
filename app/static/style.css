@@ -130,6 +130,9 @@ label > input, label > textarea, label > select { color: var(--text); font-size:
 .voice-box .check input { width: auto; }
 .voice-row { display: grid; grid-template-columns: 1.2fr 1.4fr 0.6fr auto; gap: 10px; align-items: end; }
 .voice-box audio { width: 100%; height: 36px; }
+.delivery-row { grid-template-columns: 1.2fr 2fr; align-items: start; }
+.delivery-row .span-wide { grid-column: 2; }
+.delivery-row [data-v=delivery-hint] { grid-column: 1 / -1; }
 .voice-off .voice-row, .voice-off .voice-extra { display: none; }
 .voice-text { font-style: italic; }
 .reels { display: flex; flex-direction: column; gap: 16px; }
@@ -175,6 +178,8 @@ dialog::backdrop { background: rgba(0,0,0,.5); }
   .grid-form label:first-child, .form-actions, .span-2 { grid-column: auto; }
   .reel { grid-template-columns: 1fr; }
   .voice-row { grid-template-columns: 1fr 1fr; }
+  .delivery-row { grid-template-columns: 1fr; }
+  .delivery-row .span-wide { grid-column: auto; }
   .reel video, .reel .placeholder { max-width: 320px; margin: 0 auto; }
   .note-form { flex-direction: column; }
   .note-form .btn { width: 100%; }

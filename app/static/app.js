@@ -207,6 +207,25 @@ function saveVoicePrefs(v) {
 
 function providerById(id) { return state.tts.providers.find((p) => p.id === id); }
 
+// Подача голоса для своего TTS (CosyVoice понимает инструкции только по-английски).
+const DELIVERY = [
+  { id: "preset", label: "Как в пресете голоса" },
+  { id: "none", label: "Без инструкции", value: "" },
+  { id: "energetic", label: "Энергично, с драйвом", value: "speak energetically and enthusiastically, upbeat tone, slightly fast pace" },
+  { id: "calm", label: "Спокойно и тепло", value: "speak calmly and warmly, medium pace" },
+  { id: "confident", label: "Уверенно, по-деловому", value: "speak confidently and clearly, like a professional business presenter" },
+  { id: "friendly", label: "Дружелюбно, как другу", value: "speak in a friendly, cheerful conversational tone, smiling" },
+  { id: "intrigue", label: "Интригующе", value: "speak in an intriguing, slightly hushed tone, building suspense" },
+  { id: "custom", label: "Своя инструкция (по-английски)…" },
+];
+const CYRILLIC = /[А-Яа-яЁё]/;
+
+function deliveryFromInstruct(instruct) {
+  if (instruct === undefined || instruct === null) return { id: "preset", custom: "" };
+  const preset = DELIVERY.find((d) => d.value === instruct);
+  return preset ? { id: preset.id, custom: "" } : { id: "custom", custom: instruct };
+}
+
 function mountVoice(box, opts = {}) {
   const prefs = loadVoicePrefs();
   const providerId = opts.tts_provider || prefs.tts_provider || state.tts.default;
@@ -219,6 +238,12 @@ function mountVoice(box, opts = {}) {
       <label>Темп<select data-v="speed">${SPEEDS.map((x) => `<option value="${x}">${x.toFixed(1)}×</option>`).join("")}</select></label>
       <button type="button" class="btn" data-v="preview">▶ Прослушать</button>
     </div>
+    <div class="voice-row delivery-row voice-extra" data-v="delivery-row">
+      <label>Подача<select data-v="delivery">${DELIVERY.map((d) => `<option value="${d.id}">${esc(d.label)}</option>`).join("")}</select></label>
+      <label class="span-wide" data-v="custom-wrap">Инструкция для модели
+        <input data-v="custom" maxlength="300" placeholder="speak with excitement, fast pace, like a sports commentator"></label>
+      <span class="muted span-wide" data-v="delivery-hint"></span>
+    </div>
     <label class="check voice-extra"><input type="checkbox" data-v="karaoke"> Караоке-субтитры (подсветка слова, которое звучит)</label>
     <div class="voice-extra muted" data-v="note"></div>
     <audio data-v="audio" controls class="hidden"></audio>`;
@@ -228,6 +253,18 @@ function mountVoice(box, opts = {}) {
     q("voice").innerHTML = (p?.voices || []).map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
     if (selected && [...q("voice").options].some((o) => o.value === selected)) q("voice").value = selected;
     q("note").textContent = p?.note || "";
+    q("delivery-row").classList.toggle("hidden", !p?.instruct);
+    updateDelivery();
+  };
+  const updateDelivery = () => {
+    const p = providerById(q("provider").value);
+    const custom = q("delivery").value === "custom";
+    q("custom-wrap").classList.toggle("hidden", !custom);
+    const presetInstruct = p?.voices.find((v) => v.id === q("voice").value)?.instruct;
+    let hint = "";
+    if (q("delivery").value === "preset") hint = presetInstruct ? `В пресете: «${presetInstruct}»` : "У этого голоса в пресете нет инструкции";
+    if (custom && CYRILLIC.test(q("custom").value)) hint = "⚠️ Пишите по-английски: русскую инструкцию модель зачитает вслух";
+    q("delivery-hint").textContent = hint;
   };
   const toggle = () => box.classList.toggle("voice-off", !q("voiceover").checked);
 
@@ -236,11 +273,18 @@ function mountVoice(box, opts = {}) {
   fillVoices(opts.tts_voice || prefs.tts_voice);
   q("speed").value = String(opts.tts_speed || prefs.tts_speed || 1.0);
   q("karaoke").checked = opts.karaoke ?? prefs.karaoke ?? true;
+  const delivery = deliveryFromInstruct("tts_instruct" in opts ? opts.tts_instruct : prefs.tts_instruct);
+  q("delivery").value = delivery.id;
+  q("custom").value = delivery.custom;
+  updateDelivery();
   if (!q("speed").value) q("speed").value = "1";
   toggle();
 
   q("voiceover").addEventListener("change", toggle);
   q("provider").addEventListener("change", () => fillVoices());
+  q("voice").addEventListener("change", updateDelivery);
+  q("delivery").addEventListener("change", updateDelivery);
+  q("custom").addEventListener("input", updateDelivery);
   q("preview").addEventListener("click", () => guarded(async () => {
     const btn = q("preview");
     btn.disabled = true;
@@ -249,7 +293,10 @@ function mountVoice(box, opts = {}) {
       const res = await fetch("/api/tts/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: q("provider").value, voice: q("voice").value, speed: Number(q("speed").value) }),
+        body: JSON.stringify({
+          provider: q("provider").value, voice: q("voice").value, speed: Number(q("speed").value),
+          instruct: readInstruct(box),
+        }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Ошибка ${res.status}`);
       const audio = q("audio");
@@ -263,6 +310,14 @@ function mountVoice(box, opts = {}) {
   }));
 }
 
+function readInstruct(box) {
+  const q = (name) => box.querySelector(`[data-v=${name}]`);
+  if (!providerById(q("provider").value)?.instruct) return null;
+  const id = q("delivery").value;
+  if (id === "custom") return q("custom").value.trim();
+  return DELIVERY.find((d) => d.id === id)?.value ?? null;
+}
+
 function readVoice(box) {
   const q = (name) => box.querySelector(`[data-v=${name}]`);
   const v = {
@@ -271,6 +326,7 @@ function readVoice(box) {
     tts_voice: q("voice").value,
     tts_speed: Number(q("speed").value) || 1,
     karaoke: q("karaoke").checked,
+    tts_instruct: readInstruct(box),
   };
   saveVoicePrefs(v);
   return v;
@@ -280,7 +336,10 @@ function voiceLabel(options) {
   if (!options?.voiceover) return "";
   const p = providerById(options.tts_provider);
   const voice = p?.voices.find((v) => v.id === options.tts_voice)?.name || options.tts_voice || "";
-  return ` · 🎙 ${voice.split(" — ")[0]}${p ? ` (${p.name})` : ""}${options.karaoke === false ? "" : " · караоке"}`;
+  const delivery = deliveryFromInstruct(options.tts_instruct);
+  const manner = p?.instruct && delivery.id !== "preset"
+    ? `, ${(DELIVERY.find((d) => d.id === delivery.id)?.label || "").toLowerCase().replace("…", "")}` : "";
+  return ` · 🎙 ${voice.split(" — ")[0]}${p ? ` (${p.name}${manner})` : ""}${options.karaoke === false ? "" : " · караоке"}`;
 }
 
 // ---------- рилсы ----------

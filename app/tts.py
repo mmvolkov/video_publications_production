@@ -48,9 +48,14 @@ class Provider:
     note: str = ""
     ext: str = "wav"
     env_keys: list[str] = field(default_factory=list)
+    supports_instruct: bool = False  # сервис понимает инструкцию по подаче (тон, темп, эмоция)
 
     def available(self) -> bool:
         return all(_env(k) for k in self.env_keys)
+
+    def voice_list(self) -> list[dict]:
+        """Голоса для интерфейса: [{"id", "name", "instruct"}]."""
+        return [{"id": vid, "name": label, "instruct": ""} for vid, label in self.voices]
 
     def synthesize(self, text: str, voice: str, speed: float, out: Path) -> list[dict] | None:
         """Записать аудио в out. Может вернуть тайминги слов, если сервис их отдаёт."""
@@ -96,7 +101,10 @@ class CorpProvider(Provider):
             ]),
             note="Собственный сервер, OpenAI-совместимый /v1/audio/speech",
             env_keys=[],
+            supports_instruct=True,
         )
+        self._catalog: list[dict] | None = None
+        self._catalog_at = 0.0
 
     @property
     def base_url(self) -> str:
@@ -109,9 +117,33 @@ class CorpProvider(Provider):
     def available(self) -> bool:
         return bool(self.api_key)
 
-    def synthesize(self, text: str, voice: str, speed: float, out: Path) -> None:
+    def voice_list(self) -> list[dict]:
+        """Голоса с сервера (GET /v1/voices): новый пресет в voices/ появляется на сайте сам.
+
+        Список кешируется на минуту; если сервер недоступен — берём CORP_TTS_VOICES / встроенный.
+        """
+        if _env("CORP_TTS_VOICES") or not self.available():
+            return super().voice_list()
+        if self._catalog is None or time.time() - self._catalog_at > CATALOG_TTL:
+            self._catalog_at = time.time()
+            try:
+                resp = httpx.get(f"{self.base_url}/voices", timeout=4,
+                                 headers={"Authorization": f"Bearer {self.api_key}"})
+                resp.raise_for_status()
+                self._catalog = [
+                    {"id": v["name"], "name": v.get("title") or v["name"], "instruct": v.get("instruct") or ""}
+                    for v in resp.json().get("voices", []) if v.get("name")
+                ] or None
+            except (httpx.HTTPError, ValueError, KeyError, AttributeError):
+                self._catalog = None
+        return self._catalog or super().voice_list()
+
+    def synthesize(self, text: str, voice: str, speed: float, out: Path, instruct: str | None = None) -> None:
         # httpx кодирует JSON в UTF-8 — кириллица в теле не ломается.
         body = {"model": "tts-1", "voice": voice, "input": text, "response_format": "wav", "speed": speed}
+        # Нет поля — сервер берёт instruct из пресета голоса; пустая строка — без инструкции.
+        if instruct is not None:
+            body["instruct"] = instruct
         resp = httpx.post(f"{self.base_url}/audio/speech", json=body, timeout=120,
                           headers={"Authorization": f"Bearer {self.api_key}"})
         _check(resp, "Свой TTS")
@@ -232,6 +264,23 @@ class ElevenLabsProvider(Provider):
         out.write_bytes(resp.content)
 
 
+CATALOG_TTL = 60
+CYRILLIC = re.compile(r"[А-Яа-яЁё]")
+
+
+def check_instruct(instruct: str | None) -> str | None:
+    """CosyVoice выполняет инструкцию только на английском (или китайском): русскую он произносит вслух."""
+    if instruct is None:
+        return None
+    instruct = " ".join(instruct.split())
+    if CYRILLIC.search(instruct):
+        raise TTSError("Инструкцию по подаче пишите по-английски: русскую модель зачитывает вслух. "
+                       "Например: speak energetically, upbeat tone")
+    if len(instruct) > 300:
+        raise TTSError("Инструкция по подаче слишком длинная (до 300 символов)")
+    return instruct
+
+
 def _atempo(path: Path, speed: float) -> None:
     tmp = path.with_name(path.stem + ".tempo" + path.suffix)
     run(["ffmpeg", "-y", "-v", "error", "-i", str(path), "-filter:a", f"atempo={max(0.5, speed):.3f}", str(tmp)])
@@ -253,7 +302,7 @@ def describe() -> dict:
         "default": default_provider(),
         "providers": [
             {"id": p.id, "name": p.name, "available": p.available(), "note": p.note,
-             "voices": [{"id": vid, "name": label} for vid, label in p.voices]}
+             "instruct": p.supports_instruct, "voices": p.voice_list()}
             for p in PROVIDERS.values()
         ],
     }
@@ -317,7 +366,8 @@ def proportional_words(text: str, begin: float, end: float) -> list[dict]:
     return words
 
 
-def synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0) -> Speech:
+def synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0,
+               instruct: str | None = None) -> Speech:
     """Озвучить фразу (с кешем): аудио, длительность и тайминги слов."""
     text = " ".join(text.split())
     if not text:
@@ -327,15 +377,21 @@ def synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0) ->
         raise TTSError(f"Неизвестный провайдер озвучки: {provider}")
     if not p.available():
         raise TTSError(f"Провайдер «{p.name}» не настроен — проверьте ключи в .env")
-    voice = voice or p.voices[0][0]
+    voice = voice or p.voice_list()[0]["id"]
     speed = max(0.5, min(2.0, float(speed or 1.0)))
-    key = hashlib.sha256(f"{p.id}|{voice}|{speed:.2f}|{text}".encode()).hexdigest()[:24]
+    instruct = check_instruct(instruct) if p.supports_instruct else None
+    # None (инструкция из пресета) и "" (без инструкции) — разные записи кеша
+    mode = "preset" if instruct is None else f"instruct:{instruct}"
+    key = hashlib.sha256(f"{p.id}|{voice}|{speed:.2f}|{mode}|{text}".encode()).hexdigest()[:24]
     out = cache_dir() / f"{p.id}_{key}.{p.ext}"
     meta = out.with_suffix(".words.json")
     if not out.exists() or out.stat().st_size == 0:
         tmp = out.with_name(out.stem + ".part." + p.ext)
         try:
-            words = p.synthesize(text, voice, speed, tmp)
+            if p.supports_instruct:
+                words = p.synthesize(text, voice, speed, tmp, instruct=instruct)
+            else:
+                words = p.synthesize(text, voice, speed, tmp)
         except TTSError:
             tmp.unlink(missing_ok=True)
             raise
