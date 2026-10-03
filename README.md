@@ -90,7 +90,7 @@ uvicorn app.main:app --reload
 |---|---|---|
 | `corp` — свой TTS (Fun-CosyVoice3, OpenAI-совместимый) | `anastasiya` (деловая диктовка), `dmitry`, `svetlana` | `CORP_TTS_API_KEY`, при необходимости `CORP_TTS_BASE_URL` |
 | `edge` — живой Microsoft edge-tts | `ru-RU-SvetlanaNeural`, `ru-RU-DmitryNeural` | ничего; текст уходит в Microsoft |
-| `yandex` — Yandex SpeechKit | `alena`, `filipp`, `jane`, `ermil`, `zahar`, `omazh` | `YANDEX_API_KEY` |
+| `yandex` — Yandex SpeechKit | `alena`, `filipp`, `jane`, `ermil`, `zahar`, `omazh` и эмоциональные `alena+good`, `jane+good`, `ermil+good`, `zahar+good` | `YANDEX_API_KEY`, `YANDEX_FOLDER_ID` |
 | `elevenlabs` — ElevenLabs | из вашей библиотеки (`ELEVENLABS_VOICES=id:Имя,…`) | `ELEVENLABS_API_KEY` |
 
 Провайдер без ключа виден в списке, но неактивен. По умолчанию выбирается `TTS_DEFAULT_PROVIDER`
@@ -108,7 +108,13 @@ uvicorn app.main:app --reload
 - **Подача (`instruct`)** — только для своего TTS: «как в пресете голоса» (поле не отправляется),
   «без инструкции» (пустая строка) или готовые варианты и своя инструкция. Инструкция пишется
   **по-английски**: русскую CosyVoice зачитывает вслух, поэтому сайт её не пропускает.
-- **Edge TTS.** Отрицательный `rate` сервис отвергает, поэтому темп ниже 1.0 делается через
+- **Замена edge-tts.** Если Microsoft не отвечает (например, 403 для IP дата-центра), фраза
+  озвучивается клоном того же голоса на своём TTS: `ru-RU-SvetlanaNeural` → `svetlana`,
+  `ru-RU-DmitryNeural` → `dmitry`. После отказа 10 минут edge не дёргается — сразу клон.
+  В карточке рилса и при «Прослушать» видно, что сработала замена. Точных таймингов слов у клона
+  нет — караоке раскладывается по длине слов. Выключить: `EDGE_FALLBACK=off`; нужен `CORP_TTS_API_KEY`.
+- **Эмоции Яндекса.** Голос вида `alena+good` отправляется как `voice=alena&emotion=good`.
+- **Edge TTS.** На 401/403 повторов нет (это отказ, а не сбой связи). Отрицательный `rate` сервис отвергает, поэтому темп ниже 1.0 делается через
   ffmpeg `atempo`. Обрывы повторяются до 5 раз с нарастающей паузой.
 - **Кеш.** Каждая фраза кешируется в `data/tts_cache/` по (провайдер, голос, темп, текст),
   тайминги слов — рядом в `*.words.json`.

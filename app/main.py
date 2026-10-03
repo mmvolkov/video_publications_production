@@ -7,6 +7,7 @@ import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -181,7 +182,10 @@ def tts_preview(body: PreviewIn) -> FileResponse:
         speech = tts.synthesize(body.text, body.provider, body.voice, body.speed, body.instruct)
     except tts.TTSError as exc:
         raise HTTPException(400, str(exc))
-    return FileResponse(speech.path, media_type="audio/mpeg" if speech.path.suffix == ".mp3" else "audio/wav")
+    # Пояснение о запасном голосе — в заголовке (URL-кодировано: в заголовках только ASCII)
+    headers = {"X-TTS-Fallback": quote(speech.fallback)} if speech.fallback else None
+    return FileResponse(speech.path, media_type="audio/mpeg" if speech.path.suffix == ".mp3" else "audio/wav",
+                        headers=headers)
 
 
 @app.get("/api/projects")

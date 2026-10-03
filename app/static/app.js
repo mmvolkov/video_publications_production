@@ -299,6 +299,8 @@ function mountVoice(box, opts = {}) {
         }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Ошибка ${res.status}`);
+      const fallback = res.headers.get("X-TTS-Fallback");
+      if (fallback) toast(decodeURIComponent(fallback), 7000);
       const audio = q("audio");
       audio.src = URL.createObjectURL(await res.blob());
       audio.classList.remove("hidden");
@@ -383,6 +385,7 @@ function renderReels() {
           <h3>${esc(s.title || "Рилс")}</h3>
           <div class="meta muted">${new Date(r.created_at).toLocaleString("ru-RU")}${r.duration ? ` · ${r.duration} с` : ""}${voiceLabel(r.options)}${sourceNote}</div>
           ${r.status === "error" ? `<p class="error">${esc(r.error)}</p>` : ""}
+          ${r.status === "done" && r.voice_note ? `<p class="voice-note">⚠️ ${esc(r.voice_note)}</p>` : ""}
           ${s.caption ? `<div class="caption">${esc(s.caption)}<div class="tags">${esc((s.hashtags || []).join(" "))}</div></div>` : ""}
           ${s.scenes ? `<ol class="scenes-preview">${s.scenes.map((sc) => `<li>${esc(sc.text || "(без текста)")} — ${sc.duration} с${sc.voice ? `<br><span class="voice-text">🎙 ${esc(sc.voice)}</span>` : ""}</li>`).join("")}</ol>` : ""}
           <div class="actions">

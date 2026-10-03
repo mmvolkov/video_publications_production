@@ -38,6 +38,7 @@ class Speech:
     duration: float
     words: list[dict]  # [{"text", "start", "end"}] в секундах от начала файла
     timed: bool        # True — реальные тайминги от сервиса, False — разложены пропорционально
+    fallback: str = ""  # не пусто — фраза озвучена запасным голосом (пояснение для интерфейса)
 
 
 @dataclass
@@ -197,6 +198,9 @@ class EdgeProvider(Provider):
                 raise TTSError("пустой ответ")
             except Exception as exc:  # noqa: BLE001 — сеть/сервис, повторяем
                 last_error = exc
+                if getattr(exc, "status", None) in (401, 403):
+                    # Отказ сервиса (например, Microsoft не пускает IP дата-центра) — повторы не помогут
+                    raise TTSError(f"Edge TTS: доступ запрещён (HTTP {exc.status})") from exc
                 time.sleep(1.5 * (attempt + 1))
         else:
             raise TTSError(f"Edge TTS не ответил после 5 попыток: {last_error}")
@@ -215,10 +219,14 @@ class YandexProvider(Provider):
             name="Yandex SpeechKit",
             voices=_parse_voices(os.getenv("YANDEX_TTS_VOICES", ""), [
                 ("alena", "Алёна"),
+                ("alena+good", "Алёна — эмоциональная"),
                 ("filipp", "Филипп"),
                 ("jane", "Джейн"),
+                ("jane+good", "Джейн — эмоциональная"),
                 ("ermil", "Ермил"),
+                ("ermil+good", "Ермил — эмоциональный"),
                 ("zahar", "Захар"),
+                ("zahar+good", "Захар — эмоциональный"),
                 ("omazh", "Омаж"),
             ]),
             note="Оплата в рублях через Yandex Cloud",
@@ -226,8 +234,12 @@ class YandexProvider(Provider):
         )
 
     def synthesize(self, text: str, voice: str, speed: float, out: Path) -> None:
+        # «alena+good» — голос и эмоция (good — радостная, evil — раздражённая; есть не у всех голосов)
+        voice, _, emotion = voice.partition("+")
         data = {"text": text, "lang": "ru-RU", "voice": voice, "speed": f"{speed:.2f}",
                 "format": "lpcm", "sampleRateHertz": "48000"}
+        if emotion:
+            data["emotion"] = emotion
         if _env("YANDEX_FOLDER_ID"):
             data["folderId"] = _env("YANDEX_FOLDER_ID")
         resp = httpx.post("https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize", data=data, timeout=120,
@@ -301,7 +313,9 @@ def describe() -> dict:
     return {
         "default": default_provider(),
         "providers": [
-            {"id": p.id, "name": p.name, "available": p.available(), "note": p.note,
+            {"id": p.id, "name": p.name, "available": p.available(),
+             "note": p.note + (". Если Microsoft не ответит — озвучим клоном этого голоса на своём TTS"
+                               if p.id == "edge" and edge_fallback("") else ""),
              "instruct": p.supports_instruct, "voices": p.voice_list()}
             for p in PROVIDERS.values()
         ],
@@ -366,8 +380,55 @@ def proportional_words(text: str, begin: float, end: float) -> list[dict]:
     return words
 
 
+# Запасной голос для edge-tts: клоны Светланы и Дмитрия на своём TTS.
+EDGE_FALLBACK_VOICES = {"ru-RU-SvetlanaNeural": "svetlana", "ru-RU-DmitryNeural": "dmitry"}
+EDGE_COOLDOWN = 600  # после отказа edge столько секунд сразу идём в запасной голос
+_edge_down_until = 0.0
+_edge_down_reason = ""
+
+
+def edge_fallback(voice: str) -> tuple[str, str] | None:
+    """(провайдер, голос) для замены edge-tts или None, если замена выключена/невозможна."""
+    if _env("EDGE_FALLBACK", default="corp").lower() in ("", "0", "off", "false", "no"):
+        return None
+    corp = PROVIDERS.get("corp")
+    if corp is None or not corp.available():
+        return None
+    return "corp", EDGE_FALLBACK_VOICES.get(voice, _env("EDGE_FALLBACK_VOICE", default="svetlana"))
+
+
 def synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0,
                instruct: str | None = None) -> Speech:
+    """Озвучить фразу (с кешем): аудио, длительность и тайминги слов.
+
+    Если edge-tts недоступен, фраза озвучивается клоном того же голоса на своём TTS
+    (ru-RU-SvetlanaNeural → svetlana), а в Speech.fallback пишется пояснение.
+    """
+    global _edge_down_until, _edge_down_reason
+    if provider != "edge":
+        return _synthesize(text, provider, voice, speed, instruct)
+
+    voice = voice or PROVIDERS["edge"].voice_list()[0]["id"]
+    fallback = edge_fallback(voice)
+    reason = ""
+    if fallback is None or time.time() >= _edge_down_until:
+        try:
+            speech = _synthesize(text, provider, voice, speed, instruct)
+            _edge_down_until = 0.0
+            return speech
+        except TTSError as exc:
+            if fallback is None:
+                raise
+            reason = str(exc).removeprefix("Edge TTS: ")
+            _edge_down_until, _edge_down_reason = time.time() + EDGE_COOLDOWN, reason
+    speech = _synthesize(text, fallback[0], fallback[1], speed, None)
+    speech.fallback = (f"Edge TTS недоступен ({reason or _edge_down_reason}) — "
+                       f"озвучено голосом «{fallback[1]}» своего TTS")
+    return speech
+
+
+def _synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0,
+                instruct: str | None = None) -> Speech:
     """Озвучить фразу (с кешем): аудио, длительность и тайминги слов."""
     text = " ".join(text.split())
     if not text:

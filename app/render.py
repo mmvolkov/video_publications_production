@@ -252,6 +252,7 @@ def render_reel(
     scenes = script["scenes"]
     voices: list[Path | None] = [None] * len(scenes)
     speeches: list = [None] * len(scenes)
+    voice_notes: list[str] = []
     durations = [float(s["duration"]) for s in scenes]
     if voiceover:
         from . import tts
@@ -264,6 +265,8 @@ def render_reel(
             speech = tts.synthesize(text, voiceover.get("provider", ""), voiceover.get("voice", ""),
                                     float(voiceover.get("speed") or 1.0), voiceover.get("instruct"))
             voices[i], speeches[i] = speech.path, speech
+            if speech.fallback and speech.fallback not in voice_notes:
+                voice_notes.append(speech.fallback)
             # сцена с озвучкой длится ровно столько, сколько говорит диктор (+ паузы)
             durations[i] = max(1.5, speech.duration + VOICE_LEAD + VOICE_TAIL)
     durations = [_frames_exact(d) for d in durations]
@@ -349,5 +352,5 @@ def render_reel(
     make_cover(stills[0], script.get("cover_text") or "", cover)
     shutil.rmtree(work, ignore_errors=True)
     progress(1.0, "Готово")
-    return {"duration": round(total, 2), "durations": [round(d, 2) for d in durations],
+    return {"duration": round(total, 2), "durations": [round(d, 2) for d in durations], "voice_notes": voice_notes,
             "video": video.name, "cover": cover.name}

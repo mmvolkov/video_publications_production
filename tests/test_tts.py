@@ -208,6 +208,10 @@ def test_yandex_and_elevenlabs_request_shape(monkeypatch, tmp_path):
     assert seen[0]["headers"]["Authorization"] == "Api-Key ya"
     assert seen[0]["data"]["voice"] == "alena" and seen[0]["data"]["format"] == "lpcm"
     assert probe(ya_out)["duration"] == pytest.approx(1.0, abs=0.05)
+    assert "emotion" not in seen[0]["data"]
+    tts.PROVIDERS["yandex"].synthesize("Привет", "alena+good", 1.0, tmp_path / "y2.wav")
+    assert seen[1]["data"]["voice"] == "alena" and seen[1]["data"]["emotion"] == "good"
+    seen.pop(1)
 
     tts.PROVIDERS["elevenlabs"].synthesize("Привет", "voice123", 1.5, tmp_path / "e.mp3")
     assert seen[1]["url"].startswith("https://api.elevenlabs.io/v1/text-to-speech/voice123")
@@ -316,3 +320,118 @@ def test_api_rejects_russian_instruct(fake):
         r = client.post(f"/api/projects/{pid}/reels", json={"voiceover": True, "tts_provider": "fake",
                                                              "tts_instruct": "бодро"})
         assert r.status_code == 400 and "по-английски" in r.json()["detail"]
+
+
+# ---------- замена edge-tts на клон своего TTS ----------
+
+class FailingEdge(tts.Provider):
+    def __init__(self):
+        super().__init__(id="edge", name="Edge TTS (Microsoft)", voices=[("ru-RU-SvetlanaNeural", "Светлана")])
+        self.calls = 0
+
+    def synthesize(self, text, voice, speed, out):
+        self.calls += 1
+        raise tts.TTSError("Edge TTS: доступ запрещён (HTTP 403)")
+
+
+class FakeCorp(FakeProvider):
+    def __init__(self):
+        super().__init__()
+        self.id, self.supports_instruct = "corp", True
+
+    def synthesize(self, text, voice, speed, out, instruct=None):
+        self.calls.append((text, voice, speed, instruct))
+        _tone(out)
+
+
+def _tone(out):
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=duration=0.8", "-f", "wav", str(out)],
+                   check=True)
+
+
+@pytest.fixture()
+def edge_down(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(tts, "_edge_down_until", 0.0)
+    monkeypatch.delenv("EDGE_FALLBACK", raising=False)
+    edge, corp = FailingEdge(), FakeCorp()
+    monkeypatch.setitem(tts.PROVIDERS, "edge", edge)
+    monkeypatch.setitem(tts.PROVIDERS, "corp", corp)
+    return edge, corp
+
+
+def test_edge_falls_back_to_corp_clone(edge_down):
+    edge, corp = edge_down
+    speech = tts.synthesize("Привет", "edge", "ru-RU-SvetlanaNeural", 1.1, "speak calmly")
+    assert corp.calls == [("Привет", "svetlana", 1.1, None)]  # инструкции у edge нет — пресет клона
+    assert "svetlana" in speech.fallback and "403" in speech.fallback
+    assert "Edge TTS недоступен (доступ запрещён" in speech.fallback
+    # следующая фраза в течение 10 минут сразу идёт в запасной голос, без попытки edge
+    tts.synthesize("Ещё фраза", "edge", "ru-RU-DmitryNeural", 1.0)
+    assert edge.calls == 1
+    assert corp.calls[-1][1] == "dmitry"
+
+
+def test_edge_retried_after_cooldown(edge_down, monkeypatch):
+    edge, _ = edge_down
+    tts.synthesize("Раз", "edge")
+    monkeypatch.setattr(tts, "_edge_down_until", 0.0)  # прошло 10 минут
+    tts.synthesize("Два", "edge")
+    assert edge.calls == 2
+
+
+def test_edge_fallback_can_be_disabled(edge_down, monkeypatch):
+    monkeypatch.setenv("EDGE_FALLBACK", "off")
+    with pytest.raises(tts.TTSError, match="403"):
+        tts.synthesize("Привет", "edge")
+
+
+def test_edge_fallback_needs_corp_key(edge_down, monkeypatch):
+    _, corp = edge_down
+    monkeypatch.setattr(corp, "available", lambda: False)
+    with pytest.raises(tts.TTSError, match="403"):
+        tts.synthesize("Привет", "edge")
+
+
+def test_edge_403_is_not_retried(monkeypatch, tmp_path):
+    import edge_tts
+
+    attempts = []
+
+    class Forbidden(Exception):
+        status = 403
+
+    class FakeCommunicate:
+        def __init__(self, *a, **k):
+            attempts.append(1)
+
+        async def stream(self):
+            raise Forbidden("Invalid response status")
+            yield  # noqa: unreachable — делает метод асинхронным генератором
+
+    monkeypatch.setattr(edge_tts, "Communicate", FakeCommunicate)
+    monkeypatch.setattr(tts.time, "sleep", lambda s: pytest.fail("не должно быть пауз между повторами"))
+    with pytest.raises(tts.TTSError, match="HTTP 403"):
+        tts.EdgeProvider().synthesize("Привет", "ru-RU-SvetlanaNeural", 1.0, tmp_path / "a.mp3")
+    assert len(attempts) == 1
+
+
+def test_fallback_note_reaches_reel_and_preview(edge_down):
+    with TestClient(main.app) as client:
+        r = client.post("/api/tts/preview", json={"provider": "edge", "voice": "ru-RU-SvetlanaNeural"})
+        assert r.status_code == 200
+        from urllib.parse import unquote
+        assert "svetlana" in unquote(r.headers["X-TTS-Fallback"])
+
+        pid = client.post("/api/projects", json={"title": "x", "brief": {"topic": "Кофе"}}).json()["id"]
+        client.post(f"/api/projects/{pid}/notes", json={"text": "Варим кофе."})
+        reel = client.post(f"/api/projects/{pid}/reels", json={"duration": 15, "voiceover": True,
+                                                               "tts_provider": "edge"}).json()
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            reel = storage.find(storage.get_project(pid)["reels"], reel["id"])
+            if reel["status"] in ("done", "error"):
+                break
+            time.sleep(0.3)
+        assert reel["status"] == "done", reel.get("error")
+        assert "svetlana" in reel["voice_note"]

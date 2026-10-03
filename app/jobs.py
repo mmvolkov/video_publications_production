@@ -67,6 +67,7 @@ def render_reel(project: dict, reel: dict) -> None:
     script = dict(reel["script"])
     script["scenes"] = [dict(scene, duration=d) for scene, d in zip(script["scenes"], result["durations"])]
     storage.update_reel(project_id, reel_id, status="done", progress=1.0, stage="Готово", script=script,
+                        voice_note="; ".join(result.get("voice_notes") or []),
                         duration=result["duration"], finished_at=storage.now_iso(),
                         version=int(reel.get("version") or 0) + 1)
 
