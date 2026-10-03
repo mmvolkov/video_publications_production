@@ -4,3 +4,7 @@ __pycache__/
 .venv/
 .env
 data/
+
+# промежуточные файлы сборки рилсов
+out/*/work*/
+out/*/voice_v2/
