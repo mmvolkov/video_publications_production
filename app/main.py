@@ -91,6 +91,7 @@ class VoiceOptions(BaseModel):
     tts_provider: str = Field("", max_length=40)
     tts_voice: str = Field("", max_length=120)
     tts_speed: float = Field(1.0, ge=0.5, le=2.0)
+    karaoke: bool = True
 
 
 class ReelIn(VoiceOptions):
@@ -170,10 +171,10 @@ def tts_providers() -> dict:
 def tts_preview(body: PreviewIn) -> FileResponse:
     """Прослушать голос до сборки рилса."""
     try:
-        path, _ = tts.synthesize(body.text, body.provider, body.voice, body.speed)
+        speech = tts.synthesize(body.text, body.provider, body.voice, body.speed)
     except tts.TTSError as exc:
         raise HTTPException(400, str(exc))
-    return FileResponse(path, media_type="audio/mpeg" if path.suffix == ".mp3" else "audio/wav")
+    return FileResponse(speech.path, media_type="audio/mpeg" if speech.path.suffix == ".mp3" else "audio/wav")
 
 
 @app.get("/api/projects")

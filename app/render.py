@@ -7,7 +7,7 @@ from typing import Callable
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from . import config
+from . import config, subtitles
 from .media import open_image, run
 
 W, H = config.WIDTH, config.HEIGHT
@@ -16,6 +16,7 @@ SUPER = 2  # фото готовим в 2× разрешении, чтобы з�
 # Безопасная зона Reels: сверху ~220px, снизу ~420px перекрывает интерфейс.
 SAFE_TOP = 240
 SAFE_BOTTOM = H - 440
+KARAOKE_TOP = SAFE_BOTTOM - 260  # караоке-субтитры занимают ~2 строки над нижней безопасной зоной
 
 PALETTES = [
     ((235, 64, 82), (255, 128, 72)),
@@ -43,6 +44,10 @@ def find_font() -> str:
         if candidate and Path(candidate).exists():
             return candidate
     raise RuntimeError("Не найден шрифт с кириллицей. Установите fonts-dejavu или задайте FONT_PATH.")
+
+
+def font_family() -> str:
+    return ImageFont.truetype(find_font(), 20).getname()[0]
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont:
@@ -77,11 +82,12 @@ def _fit(text: str, max_width: int, sizes: range, max_lines: int) -> tuple[Image
     return font, lines
 
 
-def text_overlay(text: str, style: str, path: Path) -> None:
+def text_overlay(text: str, style: str, path: Path, karaoke: bool = False) -> None:
     """Прозрачный PNG 1080×1920 с текстом сцены.
 
     style='caption' — плашка в нижней трети поверх фото/видео;
     style='card' — крупный текст по центру (для карточек без материала).
+    karaoke=True — низ кадра занят субтитрами: плашка уходит наверх, карточка — выше центра.
     """
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     text = text.strip()
@@ -91,7 +97,8 @@ def text_overlay(text: str, style: str, path: Path) -> None:
             font, lines = _fit(text, W - 160, range(104, 47, -6), 8)
             line_h = int(font.size * 1.25)
             total = line_h * len(lines)
-            y = (SAFE_TOP + SAFE_BOTTOM) // 2 - total // 2
+            bottom = KARAOKE_TOP - 40 if karaoke else SAFE_BOTTOM
+            y = max(SAFE_TOP, (SAFE_TOP + bottom) // 2 - total // 2)
             for line in lines:
                 x = (W - font.getlength(line)) / 2
                 draw.text((x + 4, y + 5), line, font=font, fill=(0, 0, 0, 150))
@@ -104,7 +111,7 @@ def text_overlay(text: str, style: str, path: Path) -> None:
             box_w = int(max(font.getlength(l) for l in lines)) + 2 * pad_x
             box_h = line_h * len(lines) + 2 * pad_y
             x0 = (W - box_w) // 2
-            y0 = SAFE_BOTTOM - box_h
+            y0 = SAFE_TOP + 20 if karaoke else SAFE_BOTTOM - box_h
             draw.rounded_rectangle((x0, y0, x0 + box_w, y0 + box_h), radius=32, fill=(10, 10, 14, 175))
             y = y0 + pad_y
             for line in lines:
@@ -156,19 +163,21 @@ ENCODE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "y
 TEXT_IN = "[1:v]format=rgba,fade=t=in:st=0:d=0.35:alpha=1[t]"
 
 
-def render_image_segment(still: Path, overlay: Path, duration: float, out: Path, zoom_in: bool) -> None:
+def render_image_segment(still: Path, overlay: Path, duration: float, out: Path, zoom_in: bool,
+                         subs: str = "") -> None:
     frames = max(1, round(duration * config.FPS))
     z = f"1+0.08*on/{frames}" if zoom_in else f"1.08-0.08*on/{frames}"
     graph = (
         f"[0:v]zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
         f":d={frames}:s={W}x{H}:fps={config.FPS},setsar=1[bg];"
-        f"{TEXT_IN};[bg][t]overlay=0:0:shortest=1,format=yuv420p[v]"
+        f"{TEXT_IN};[bg][t]overlay=0:0:shortest=1{subs},format=yuv420p[v]"
     )
     run(["ffmpeg", "-y", "-v", "error", "-i", str(still), "-loop", "1", "-i", str(overlay),
          "-filter_complex", graph, "-map", "[v]", "-frames:v", str(frames), "-an", *ENCODE, str(out)])
 
 
-def render_video_segment(clip: Path, overlay: Path, duration: float, start: float, out: Path) -> None:
+def render_video_segment(clip: Path, overlay: Path, duration: float, start: float, out: Path,
+                         subs: str = "") -> None:
     frames = max(1, round(duration * config.FPS))
     graph = (
         f"[0:v]fps={config.FPS},split[a][b];"
@@ -176,7 +185,7 @@ def render_video_segment(clip: Path, overlay: Path, duration: float, start: floa
         f"gblur=sigma=12,eq=brightness=-0.12,scale={W}:{H}[bg];"
         f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];"
         f"[bg][fg]overlay=(W-w)/2:(H-h)/2,tpad=stop_mode=clone:stop_duration={duration:.2f},setsar=1[base];"
-        f"{TEXT_IN};[base][t]overlay=0:0:shortest=1,format=yuv420p[v]"
+        f"{TEXT_IN};[base][t]overlay=0:0:shortest=1{subs},format=yuv420p[v]"
     )
     run(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-i", str(clip), "-loop", "1", "-i", str(overlay),
          "-filter_complex", graph, "-map", "[v]", "-frames:v", str(frames), "-an", *ENCODE, str(out)])
@@ -227,11 +236,13 @@ def render_reel(
     music: Path | None = None,
     progress: Progress | None = None,
     voiceover: dict | None = None,
+    karaoke: bool = False,
 ) -> dict:
     """Собрать reel.mp4 и cover.jpg в out_dir.
 
     voiceover = {"provider", "voice", "speed"} — озвучить поле scene["voice"] каждой сцены;
-    длительность такой сцены подстраивается под фразу диктора. Возвращает {duration, durations, video, cover}.
+    длительность такой сцены подстраивается под фразу диктора.
+    karaoke=True — поверх сцен с озвучкой пословные субтитры с подсветкой текущего слова. Возвращает {duration, durations, video, cover}.
     """
     progress = progress or (lambda *_: None)
     work = out_dir / "work"
@@ -240,6 +251,7 @@ def render_reel(
 
     scenes = script["scenes"]
     voices: list[Path | None] = [None] * len(scenes)
+    speeches: list = [None] * len(scenes)
     durations = [float(s["duration"]) for s in scenes]
     if voiceover:
         from . import tts
@@ -249,11 +261,11 @@ def render_reel(
             if not text:
                 continue
             progress(0.02 + 0.13 * i / len(scenes), f"Озвучка {i + 1} из {len(scenes)}")
-            path, length = tts.synthesize(text, voiceover.get("provider", ""), voiceover.get("voice", ""),
-                                          float(voiceover.get("speed") or 1.0))
-            voices[i] = path
+            speech = tts.synthesize(text, voiceover.get("provider", ""), voiceover.get("voice", ""),
+                                    float(voiceover.get("speed") or 1.0))
+            voices[i], speeches[i] = speech.path, speech
             # сцена с озвучкой длится ровно столько, сколько говорит диктор (+ паузы)
-            durations[i] = max(1.5, length + VOICE_LEAD + VOICE_TAIL)
+            durations[i] = max(1.5, speech.duration + VOICE_LEAD + VOICE_TAIL)
     durations = [_frames_exact(d) for d in durations]
 
     segments: list[Path] = []
@@ -265,17 +277,23 @@ def render_reel(
         overlay = work / f"text_{i:02d}.png"
         segment = work / f"seg_{i:02d}.mp4"
         still = work / f"still_{i:02d}.jpg"
+        subs = ""
+        with_subs = karaoke and speeches[i] is not None and bool(speeches[i].words)
+        if with_subs:
+            ass = work / f"subs_{i:02d}.ass"
+            if subtitles.build_ass(speeches[i].words, VOICE_LEAD, duration, font_family(), ass):
+                subs = "," + subtitles.ass_filter(ass, str(Path(find_font()).parent))
 
         if material and material["kind"] == "video":
             src = materials_dir / material["file"]
-            text_overlay(scene.get("text", ""), "caption", overlay)
-            render_video_segment(src, overlay, duration, float(scene.get("start") or 0), segment)
+            text_overlay(scene.get("text", ""), "caption", overlay, karaoke=with_subs)
+            render_video_segment(src, overlay, duration, float(scene.get("start") or 0), segment, subs)
             run(["ffmpeg", "-y", "-v", "error", "-i", str(segment), "-frames:v", "1", str(still)])
         else:
             src = materials_dir / material["file"] if material else None
             compose_still(src, still, palette_index=i)
-            text_overlay(scene.get("text", ""), "caption" if material else "card", overlay)
-            render_image_segment(still, overlay, duration, segment, zoom_in=i % 2 == 0)
+            text_overlay(scene.get("text", ""), "caption" if material else "card", overlay, karaoke=with_subs)
+            render_image_segment(still, overlay, duration, segment, zoom_in=i % 2 == 0, subs=subs)
         segments.append(segment)
         stills.append(still)
     total = sum(durations)

@@ -43,10 +43,13 @@ def mean_volume(path: Path) -> float:
 
 
 def test_synthesize_is_cached(fake):
-    p1, d1 = tts.synthesize("Привет, мир", "fake", "v1", 1.0)
-    p2, d2 = tts.synthesize("Привет,   мир", "fake", "v1", 1.0)
-    assert p1 == p2 and d1 == pytest.approx(d2)
+    s1 = tts.synthesize("Привет, мир", "fake", "v1", 1.0)
+    s2 = tts.synthesize("Привет,   мир", "fake", "v1", 1.0)
+    assert s1.path == s2.path and s1.duration == pytest.approx(s2.duration)
     assert len(fake.calls) == 1
+    # сервис без таймингов — слова разложены пропорционально по длительности речи
+    assert not s1.timed and [w["text"] for w in s1.words] == ["Привет,", "мир"]
+    assert s1.words[-1]["end"] <= s1.duration + 0.01
     tts.synthesize("Привет, мир", "fake", "v1", 1.2)
     assert len(fake.calls) == 2
 
@@ -160,16 +163,18 @@ def test_edge_rate_retry_and_slowdown(monkeypatch, tmp_path):
 
     calls = []
 
-    class FakeCommunicate:
-        def __init__(self, text, voice, rate="+0%"):
-            calls.append(rate)
-            self.voice = voice
+    tone = tmp_path / "tone.mp3"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=duration=1", str(tone)], check=True)
 
-        async def save(self, path):
+    class FakeCommunicate:
+        def __init__(self, text, voice, rate="+0%", boundary="SentenceBoundary"):
+            calls.append(rate)
+
+        async def stream(self):
             if len(calls) == 1:
                 raise ConnectionError("обрыв")
-            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=duration=1",
-                            str(path)], check=True)
+            yield {"type": "WordBoundary", "offset": 0, "duration": 8_000_000, "text": "Привет"}
+            yield {"type": "audio", "data": tone.read_bytes()}
 
     monkeypatch.setattr(edge_tts, "Communicate", FakeCommunicate)
     monkeypatch.setattr(tts.time, "sleep", lambda s: None)
@@ -180,9 +185,10 @@ def test_edge_rate_retry_and_slowdown(monkeypatch, tmp_path):
     calls.clear()
     calls.append("skip-failure")  # следующая попытка сразу успешна
     slow = tmp_path / "slow.mp3"
-    tts.PROVIDERS["edge"].synthesize("Привет", "ru-RU-SvetlanaNeural", 0.8, slow)
+    words = tts.PROVIDERS["edge"].synthesize("Привет", "ru-RU-SvetlanaNeural", 0.8, slow)
     assert calls[-1] == "+0%"  # отрицательный rate не отправляем
     assert probe(slow)["duration"] == pytest.approx(1 / 0.8, abs=0.1)  # замедлено через atempo
+    assert words[0]["end"] == pytest.approx(0.8 / 0.8)  # тайминги растянуты вместе со звуком
 
 
 def test_yandex_and_elevenlabs_request_shape(monkeypatch, tmp_path):

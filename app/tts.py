@@ -13,10 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import subprocess
 
 import httpx
 
@@ -26,6 +30,14 @@ from .media import probe, run
 
 class TTSError(RuntimeError):
     pass
+
+
+@dataclass
+class Speech:
+    path: Path
+    duration: float
+    words: list[dict]  # [{"text", "start", "end"}] в секундах от начала файла
+    timed: bool        # True — реальные тайминги от сервиса, False — разложены пропорционально
 
 
 @dataclass
@@ -40,7 +52,8 @@ class Provider:
     def available(self) -> bool:
         return all(_env(k) for k in self.env_keys)
 
-    def synthesize(self, text: str, voice: str, speed: float, out: Path) -> None:
+    def synthesize(self, text: str, voice: str, speed: float, out: Path) -> list[dict] | None:
+        """Записать аудио в out. Может вернуть тайминги слов, если сервис их отдаёт."""
         raise NotImplementedError
 
 
@@ -123,15 +136,30 @@ class EdgeProvider(Provider):
     def available(self) -> bool:
         return _env("EDGE_TTS_ENABLED", default="true").lower() not in ("0", "false", "no")
 
-    def synthesize(self, text: str, voice: str, speed: float, out: Path) -> None:
+    def synthesize(self, text: str, voice: str, speed: float, out: Path) -> list[dict]:
         import edge_tts
 
         # Отрицательный rate сервис сейчас отвергает — замедление делаем через ffmpeg atempo.
         rate = f"+{round((max(speed, 1.0) - 1) * 100)}%"
+
+        async def stream() -> list[dict]:
+            # boundary="WordBoundary" — реальные тайминги каждого слова (по ним строятся субтитры)
+            communicate = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
+            words = []
+            with out.open("wb") as f:
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        f.write(chunk["data"])
+                    elif chunk["type"] == "WordBoundary":
+                        start = chunk["offset"] / 1e7  # единицы — 100 нс
+                        end = start + chunk["duration"] / 1e7
+                        words.append({"text": chunk["text"], "start": round(start, 3), "end": round(end, 3)})
+            return words
+
         last_error: Exception | None = None
         for attempt in range(5):  # длинные фрагменты иногда обрываются — повторяем с паузой
             try:
-                asyncio.run(edge_tts.Communicate(text, voice, rate=rate).save(str(out)))
+                words = asyncio.run(stream())
                 if out.exists() and out.stat().st_size > 0:
                     break
                 raise TTSError("пустой ответ")
@@ -142,6 +170,8 @@ class EdgeProvider(Provider):
             raise TTSError(f"Edge TTS не ответил после 5 попыток: {last_error}")
         if speed < 1.0:
             _atempo(out, speed)
+            words = [{**w, "start": round(w["start"] / speed, 3), "end": round(w["end"] / speed, 3)} for w in words]
+        return words
 
 
 # ---------- Yandex SpeechKit ----------
@@ -235,8 +265,60 @@ def cache_dir() -> Path:
     return d
 
 
-def synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0) -> tuple[Path, float]:
-    """Озвучить фразу (с кешем). Возвращает (путь к файлу, длительность в секундах)."""
+def _norm(token: str) -> str:
+    return re.sub(r"[^\w]+", "", token.lower())
+
+
+def display_tokens(text: str) -> list[str]:
+    """Слова для субтитров: знаки препинания («—», «…») приклеиваем к соседнему слову."""
+    tokens: list[str] = []
+    for token in text.split():
+        if _norm(token) or not tokens:
+            tokens.append(token)
+        else:
+            tokens[-1] += " " + token
+    return tokens
+
+
+def attach_display_text(words: list[dict], text: str) -> list[dict]:
+    """Сервис отдаёт слова без пунктуации — подставляем исходное написание, если слова сошлись."""
+    tokens = display_tokens(text)
+    if len(tokens) == len(words):
+        return [{**w, "text": t} for w, t in zip(words, tokens)]
+    return words
+
+
+def speech_bounds(path: Path, duration: float) -> tuple[float, float]:
+    """Где в файле начинается и заканчивается речь (без тишины по краям)."""
+    proc = subprocess.run(["ffmpeg", "-v", "info", "-i", str(path), "-af", "silencedetect=n=-40dB:d=0.08",
+                           "-f", "null", "-"], capture_output=True, text=True)
+    starts = [float(m) for m in re.findall(r"silence_start: ([\d.]+)", proc.stderr)]
+    ends = [float(m) for m in re.findall(r"silence_end: ([\d.]+)", proc.stderr)]
+    begin, finish = 0.0, duration
+    if starts and starts[0] <= 0.01 and ends:
+        begin = ends[0]
+    if starts and starts[-1] > begin and (len(ends) < len(starts) or ends[-1] >= duration - 0.05):
+        finish = starts[-1]
+    if finish - begin < 0.2:
+        return 0.0, duration
+    return begin, finish
+
+
+def proportional_words(text: str, begin: float, end: float) -> list[dict]:
+    """Разложить слова по времени пропорционально длине (для сервисов без таймингов)."""
+    tokens = display_tokens(text)
+    weights = [len(_norm(t)) + 1 for t in tokens]
+    total = sum(weights) or 1
+    words, t = [], begin
+    for token, weight in zip(tokens, weights):
+        length = (end - begin) * weight / total
+        words.append({"text": token, "start": round(t, 3), "end": round(t + length, 3)})
+        t += length
+    return words
+
+
+def synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0) -> Speech:
+    """Озвучить фразу (с кешем): аудио, длительность и тайминги слов."""
     text = " ".join(text.split())
     if not text:
         raise TTSError("Пустой текст для озвучки")
@@ -249,10 +331,11 @@ def synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0) ->
     speed = max(0.5, min(2.0, float(speed or 1.0)))
     key = hashlib.sha256(f"{p.id}|{voice}|{speed:.2f}|{text}".encode()).hexdigest()[:24]
     out = cache_dir() / f"{p.id}_{key}.{p.ext}"
+    meta = out.with_suffix(".words.json")
     if not out.exists() or out.stat().st_size == 0:
         tmp = out.with_name(out.stem + ".part." + p.ext)
         try:
-            p.synthesize(text, voice, speed, tmp)
+            words = p.synthesize(text, voice, speed, tmp)
         except TTSError:
             tmp.unlink(missing_ok=True)
             raise
@@ -260,8 +343,14 @@ def synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0) ->
             tmp.unlink(missing_ok=True)
             raise TTSError(f"{p.name}: {exc}") from exc
         tmp.replace(out)
+        meta.unlink(missing_ok=True)
+        if words:
+            meta.write_text(json.dumps(attach_display_text(words, text), ensure_ascii=False), encoding="utf-8")
     duration = probe(out).get("duration", 0.0)
     if duration <= 0:
         out.unlink(missing_ok=True)
         raise TTSError(f"{p.name} вернул пустое аудио")
-    return out, duration
+    if meta.exists():
+        return Speech(out, duration, json.loads(meta.read_text(encoding="utf-8")), True)
+    begin, end = speech_bounds(out, duration)
+    return Speech(out, duration, proportional_words(text, begin, end), False)

@@ -219,6 +219,7 @@ function mountVoice(box, opts = {}) {
       <label>Темп<select data-v="speed">${SPEEDS.map((x) => `<option value="${x}">${x.toFixed(1)}×</option>`).join("")}</select></label>
       <button type="button" class="btn" data-v="preview">▶ Прослушать</button>
     </div>
+    <label class="check voice-extra"><input type="checkbox" data-v="karaoke"> Караоке-субтитры (подсветка слова, которое звучит)</label>
     <div class="voice-extra muted" data-v="note"></div>
     <audio data-v="audio" controls class="hidden"></audio>`;
   const q = (name) => box.querySelector(`[data-v=${name}]`);
@@ -234,6 +235,7 @@ function mountVoice(box, opts = {}) {
   if (providerById(providerId)?.available) q("provider").value = providerId;
   fillVoices(opts.tts_voice || prefs.tts_voice);
   q("speed").value = String(opts.tts_speed || prefs.tts_speed || 1.0);
+  q("karaoke").checked = opts.karaoke ?? prefs.karaoke ?? true;
   if (!q("speed").value) q("speed").value = "1";
   toggle();
 
@@ -268,6 +270,7 @@ function readVoice(box) {
     tts_provider: q("provider").value,
     tts_voice: q("voice").value,
     tts_speed: Number(q("speed").value) || 1,
+    karaoke: q("karaoke").checked,
   };
   saveVoicePrefs(v);
   return v;
@@ -277,7 +280,7 @@ function voiceLabel(options) {
   if (!options?.voiceover) return "";
   const p = providerById(options.tts_provider);
   const voice = p?.voices.find((v) => v.id === options.tts_voice)?.name || options.tts_voice || "";
-  return ` · 🎙 ${voice.split(" — ")[0]}${p ? ` (${p.name})` : ""}`;
+  return ` · 🎙 ${voice.split(" — ")[0]}${p ? ` (${p.name})` : ""}${options.karaoke === false ? "" : " · караоке"}`;
 }
 
 // ---------- рилсы ----------
