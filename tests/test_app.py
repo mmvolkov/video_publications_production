@@ -150,11 +150,38 @@ def test_path_traversal_is_rejected(client):
 def test_password_defaults(monkeypatch):
     import importlib
 
-    for env, expected in [(None, "U$er0k!"), ("", "U$er0k!"), ("my-secret", "my-secret"), ("off", "")]:
+    monkeypatch.delenv("APP_PASSWORD_HASH", raising=False)
+    for env, plain, hashed in [(None, "", config.DEFAULT_PASSWORD_HASH), ("", "", config.DEFAULT_PASSWORD_HASH),
+                               ("my-secret", "my-secret", ""), ("off", "", "")]:
         if env is None:
             monkeypatch.delenv("APP_PASSWORD", raising=False)
         else:
             monkeypatch.setenv("APP_PASSWORD", env)
-        assert importlib.reload(config).APP_PASSWORD == expected
+        cfg = importlib.reload(config)
+        assert (cfg.APP_PASSWORD, cfg.APP_PASSWORD_HASH) == (plain, hashed)
     monkeypatch.delenv("APP_PASSWORD", raising=False)
+    monkeypatch.setenv("APP_PASSWORD_HASH", "pbkdf2_sha256$1$c2FsdA==$eA==")
+    assert importlib.reload(config).APP_PASSWORD_HASH == "pbkdf2_sha256$1$c2FsdA==$eA=="
+    monkeypatch.delenv("APP_PASSWORD_HASH", raising=False)
     importlib.reload(config)
+    assert not hasattr(config, "DEFAULT_PASSWORD")  # в коде только хеш
+
+
+def test_password_hashing():
+    from app import passwords
+
+    encoded = passwords.hash_password("hunter2", iterations=1000)
+    assert encoded.startswith("pbkdf2_sha256$1000$") and "hunter2" not in encoded
+    assert passwords.verify_password("hunter2", encoded)
+    assert not passwords.verify_password("hunter3", encoded)
+    assert not passwords.verify_password("hunter2", "garbage")
+    assert passwords.hash_password("hunter2", 1000) != encoded  # соль каждый раз новая
+
+
+def test_basic_auth_with_hash(client, monkeypatch):
+    from app import passwords
+
+    monkeypatch.setattr(config, "APP_PASSWORD_HASH", passwords.hash_password("hunter2", iterations=1000))
+    assert client.get("/api/projects").status_code == 401
+    assert client.get("/api/projects", auth=("admin", "wrong")).status_code == 401
+    assert client.get("/api/projects", auth=("admin", "hunter2")).status_code == 200

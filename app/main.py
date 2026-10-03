@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import ai, config, jobs, media, storage, tts
+from . import ai, config, jobs, media, passwords, storage, tts
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -33,13 +33,17 @@ app = FastAPI(title="Reels Studio", lifespan=lifespan)
 
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
-    if config.APP_PASSWORD and request.url.path != "/healthz":
+    if (config.APP_PASSWORD or config.APP_PASSWORD_HASH) and request.url.path != "/healthz":
         header = request.headers.get("authorization", "")
         ok = False
         if header.lower().startswith("basic "):
             try:
                 user, _, password = base64.b64decode(header[6:]).decode().partition(":")
-                ok = secrets.compare_digest(user, config.APP_USER) and secrets.compare_digest(password, config.APP_PASSWORD)
+                if config.APP_PASSWORD:
+                    good = secrets.compare_digest(password, config.APP_PASSWORD)
+                else:
+                    good = passwords.verify_password(password, config.APP_PASSWORD_HASH)
+                ok = secrets.compare_digest(user, config.APP_USER) and good
             except (ValueError, UnicodeDecodeError):
                 ok = False
         if not ok:

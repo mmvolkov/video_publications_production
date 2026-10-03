@@ -77,7 +77,7 @@ uvicorn app.main:app --reload
 | `ANTHROPIC_API_KEY` | Ключ Claude. Без него — черновые сценарии без ИИ |
 | `ANTHROPIC_MODEL` | Модель, по умолчанию `claude-opus-5-5` |
 | `ANTHROPIC_EFFORT` | Глубина размышления: `low` / `medium` / `high` |
-| `APP_USER`, `APP_PASSWORD` | Вход на сайт (HTTP Basic). Логин по умолчанию `admin`, пароль по умолчанию `U$er0k!` — **смените на свой**, если сайт открыт в интернет. `APP_PASSWORD=off` — без пароля. Значение с `$` пишите в одинарных кавычках |
+| `APP_USER`, `APP_PASSWORD`, `APP_PASSWORD_HASH` | Вход на сайт (HTTP Basic), логин по умолчанию `admin`. Без настроек действует пароль по умолчанию — в коде хранится только его хеш (PBKDF2-SHA256). Свой пароль: `APP_PASSWORD` или, чтобы не держать его открытым текстом, `APP_PASSWORD_HASH` (сгенерировать: `python -m app.passwords 'пароль'`). `APP_PASSWORD=off` — без пароля. Значение с `$` пишите в одинарных кавычках |
 | `PUBLIC_BASE_URL` | Публичный адрес сайта — для ссылок на видео в вебхуке |
 | `N8N_WEBHOOK_URL` | Вебхук n8n, получает событие `reel.ready` |
 | `MAX_UPLOAD_MB` | Лимит на один файл (по умолчанию 500 МБ) |
