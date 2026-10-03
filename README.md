@@ -29,13 +29,31 @@
 
 ## Запуск
 
-### Docker (рекомендуется для сервера)
+### Попробовать на своём компьютере (Docker)
 
 ```bash
-cp .env.example .env      # впишите ANTHROPIC_API_KEY и APP_PASSWORD
+git clone https://github.com/mmvolkov/video_publications_production
+cd video_publications_production
+git checkout claude/confident-fermi-dq2s1a   # пока изменения не влиты в main
+cp .env.example .env      # впишите ANTHROPIC_API_KEY, CORP_TTS_API_KEY и др.
 docker compose up -d --build
-# сайт: http://localhost:8000
+# сайт: http://localhost:8128
 ```
+
+### На сервере с Traefik (рядом с TTS, домен `reels.cloudsmasters.ru`)
+
+```bash
+cd /data/apps && git clone https://github.com/mmvolkov/video_publications_production reels && cd reels
+cp .env.example .env
+# в .env: ANTHROPIC_API_KEY, APP_PASSWORD (обязательно — сайт публичный),
+#         CORP_TTS_BASE_URL=http://tts:8000/v1 и CORP_TTS_API_KEY,
+#         PUBLIC_BASE_URL=https://reels.cloudsmasters.ru, при необходимости REELS_DOMAIN
+docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
+```
+
+Нужна DNS-запись `reels.cloudsmasters.ru` на этот сервер (как у `tts.cloudsmasters.ru`).
+Контейнер подключается к сети Traefik `dedicated_server_default`, в которой уже есть контейнер
+`tts`, поэтому свой TTS вызывается напрямую по `http://tts:8000/v1`.
 
 Материалы и готовые ролики лежат в `./data`.
 
