@@ -8,9 +8,12 @@ DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parent.parent / "
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5")
 ANTHROPIC_EFFORT = os.getenv("ANTHROPIC_EFFORT", "medium")
 
-# Доступ к сайту (HTTP Basic). Если APP_PASSWORD пустой — сайт открыт.
-APP_USER = os.getenv("APP_USER", "admin")
-APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+# Доступ к сайту (HTTP Basic). Если APP_PASSWORD не задан или пустой — пароль по умолчанию;
+# APP_PASSWORD=off — сайт открыт без пароля.
+DEFAULT_PASSWORD = "U$er0k!"
+APP_USER = os.getenv("APP_USER", "").strip() or "admin"
+_password = os.getenv("APP_PASSWORD", "").strip()
+APP_PASSWORD = "" if _password.lower() in ("off", "none", "false", "0") else (_password or DEFAULT_PASSWORD)
 
 # Интеграции
 N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "")

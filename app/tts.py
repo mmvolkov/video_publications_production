@@ -62,6 +62,10 @@ class Provider:
         """Записать аудио в out. Может вернуть тайминги слов, если сервис их отдаёт."""
         raise NotImplementedError
 
+    def cache_tag(self) -> str:
+        """Настройки провайдера, от которых зависит звук (часть ключа кеша)."""
+        return ""
+
 
 def _env(*names: str, default: str = "") -> str:
     for name in names:
@@ -139,7 +143,18 @@ class CorpProvider(Provider):
                 self._catalog = None
         return self._catalog or super().voice_list()
 
-    def synthesize(self, text: str, voice: str, speed: float, out: Path, instruct: str | None = None) -> None:
+    @property
+    def sentence_gap(self) -> float:
+        """Пауза между предложениями, с. 0 — отправлять фразу целиком одним запросом."""
+        try:
+            return max(0.0, float(_env("CORP_TTS_SENTENCE_GAP", default="0.35")))
+        except ValueError:
+            return 0.35
+
+    def cache_tag(self) -> str:
+        return f"split{self.sentence_gap:.2f}"
+
+    def _request(self, text: str, voice: str, speed: float, out: Path, instruct: str | None) -> None:
         # httpx кодирует JSON в UTF-8 — кириллица в теле не ломается.
         body = {"model": "tts-1", "voice": voice, "input": text, "response_format": "wav", "speed": speed}
         # Нет поля — сервер берёт instruct из пресета голоса; пустая строка — без инструкции.
@@ -149,6 +164,32 @@ class CorpProvider(Provider):
                           headers={"Authorization": f"Bearer {self.api_key}"})
         _check(resp, "Свой TTS")
         out.write_bytes(resp.content)
+
+    def synthesize(self, text: str, voice: str, speed: float, out: Path,
+                   instruct: str | None = None) -> list[dict] | None:
+        """Озвучить фразу; несколько предложений — по одному запросу с паузами между ними.
+
+        CosyVoice на сервере получает фразу одним куском (нормализатор текста для русского выключен)
+        и сливает предложения, особенно у быстрых голосов. Поэтому режем сами, как tts_corp.py.
+        Слова раскладываются внутри своего предложения — караоке точнее, чем по всей фразе.
+        """
+        parts = split_sentences(text) if self.sentence_gap > 0 else [text]
+        if len(parts) == 1:
+            self._request(text, voice, speed, out, instruct)
+            return None
+
+        pieces = []
+        try:
+            for i, sentence in enumerate(parts):
+                piece = out.with_name(f"{out.stem}.s{i}.wav")
+                self._request(sentence, voice, speed, piece, instruct)
+                duration = probe(piece).get("duration", 0.0)
+                begin, end = speech_bounds(piece, duration)
+                pieces.append((piece, sentence, max(0.0, begin - 0.04), min(duration, end + 0.04)))
+            return _join_sentences(pieces, self.sentence_gap, out)
+        finally:
+            for piece, *_ in pieces:
+                piece.unlink(missing_ok=True)
 
 
 # ---------- edge-tts (живой сервис Microsoft) ----------
@@ -274,6 +315,45 @@ class ElevenLabsProvider(Provider):
                           json=body, timeout=120, headers={"xi-api-key": _env("ELEVENLABS_API_KEY")})
         _check(resp, "ElevenLabs")
         out.write_bytes(resp.content)
+
+
+MIN_SENTENCE = 12  # короче — приклеиваем к следующему предложению («Нет!»)
+
+
+def split_sentences(text: str) -> list[str]:
+    """Разбить фразу на предложения; совсем короткие приклеить к следующему."""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?…])\s+", text.strip()) if p.strip()]
+    merged: list[str] = []
+    carry = ""
+    for i, part in enumerate(parts):
+        part = f"{carry} {part}" if carry else part
+        if len(part) < MIN_SENTENCE and i < len(parts) - 1:
+            carry = part
+            continue
+        merged.append(part)
+        carry = ""
+    return merged or [text]
+
+
+def _join_sentences(pieces: list[tuple[Path, str, float, float]], gap: float, out: Path) -> list[dict]:
+    """Склеить куски речи (без тишины по краям) с паузами; вернуть тайминги слов по предложениям."""
+    inputs, chains, labels, words = [], [], [], []
+    t = 0.0
+    for i, (path, sentence, begin, end) in enumerate(pieces):
+        inputs += ["-i", str(path)]
+        chains.append(f"[{i}:a]atrim={begin:.3f}:{end:.3f},asetpts=PTS-STARTPTS,aresample=24000,"
+                      f"aformat=sample_fmts=s16:channel_layouts=mono[s{i}]")
+        labels.append(f"[s{i}]")
+        words += proportional_words(sentence, t + 0.04, t + (end - begin) - 0.04)
+        t += end - begin
+        if i < len(pieces) - 1:
+            pause = gap * (1.25 if sentence.rstrip()[-1:] in "!?" else 1.0)
+            chains.append(f"aevalsrc=0:d={pause:.3f}:s=24000,aformat=sample_fmts=s16:channel_layouts=mono[g{i}]")
+            labels.append(f"[g{i}]")
+            t += pause
+    graph = ";".join(chains) + ";" + "".join(labels) + f"concat=n={len(labels)}:v=0:a=1[out]"
+    run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", graph, "-map", "[out]", "-f", "wav", str(out)])
+    return words
 
 
 CATALOG_TTL = 60
@@ -443,7 +523,7 @@ def _synthesize(text: str, provider: str, voice: str = "", speed: float = 1.0,
     instruct = check_instruct(instruct) if p.supports_instruct else None
     # None (инструкция из пресета) и "" (без инструкции) — разные записи кеша
     mode = "preset" if instruct is None else f"instruct:{instruct}"
-    key = hashlib.sha256(f"{p.id}|{voice}|{speed:.2f}|{mode}|{text}".encode()).hexdigest()[:24]
+    key = hashlib.sha256(f"{p.id}|{voice}|{speed:.2f}|{mode}|{p.cache_tag()}|{text}".encode()).hexdigest()[:24]
     out = cache_dir() / f"{p.id}_{key}.{p.ext}"
     meta = out.with_suffix(".words.json")
     if not out.exists() or out.stat().st_size == 0:

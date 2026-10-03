@@ -145,3 +145,16 @@ def test_interrupted_reels_are_marked_failed(tmp_path, monkeypatch):
 
 def test_path_traversal_is_rejected(client):
     assert client.get("/api/projects/..%2F..%2Fetc").status_code == 404
+
+
+def test_password_defaults(monkeypatch):
+    import importlib
+
+    for env, expected in [(None, "U$er0k!"), ("", "U$er0k!"), ("my-secret", "my-secret"), ("off", "")]:
+        if env is None:
+            monkeypatch.delenv("APP_PASSWORD", raising=False)
+        else:
+            monkeypatch.setenv("APP_PASSWORD", env)
+        assert importlib.reload(config).APP_PASSWORD == expected
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
+    importlib.reload(config)

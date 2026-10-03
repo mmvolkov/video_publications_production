@@ -435,3 +435,67 @@ def test_fallback_note_reaches_reel_and_preview(edge_down):
             time.sleep(0.3)
         assert reel["status"] == "done", reel.get("error")
         assert "svetlana" in reel["voice_note"]
+
+
+# ---------- свой TTS: разбивка на предложения с паузами ----------
+
+def _tone_bytes(seconds: float) -> bytes:
+    """WAV: 0.2 c тишины + тон + 0.2 c тишины — как ответ TTS с полями тишины."""
+    return subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+         f"aevalsrc='if(between(t,0.2,{0.2 + seconds}),0.5*sin(2*PI*300*t),0)':s=24000:d={seconds + 0.4}",
+         "-f", "wav", "-"], capture_output=True, check=True).stdout
+
+
+def test_split_sentences_rules():
+    assert tts.split_sentences("Нет! Жидкость может взрываться!") == ["Нет! Жидкость может взрываться!"]
+    assert tts.split_sentences("Первое предложение. Второе? Третье, длинное!") == \
+        ["Первое предложение.", "Второе? Третье, длинное!"]
+    assert tts.split_sentences("Без точки") == ["Без точки"]
+
+
+def test_corp_splits_sentences_with_pauses(corp, monkeypatch, tmp_path):
+    sent = []
+
+    def fake_post(url, json=None, headers=None, timeout=None, **_):
+        sent.append(json["input"])
+        return httpx.Response(200, content=_tone_bytes(1.0))
+
+    monkeypatch.setattr(tts.httpx, "post", fake_post)
+    monkeypatch.delenv("CORP_TTS_SENTENCE_GAP", raising=False)
+    out = tmp_path / "a.wav"
+    words = corp.synthesize("Это доказали ИИ-агенты! Десять тысяч агентов за восемьдесят восемь часов!",
+                            "gemini", 1.0, out, instruct=None)
+    assert sent == ["Это доказали ИИ-агенты!", "Десять тысяч агентов за восемьдесят восемь часов!"]
+    # два куска речи по ~1.08 c (тишина по краям срезана до 0.04 c) + пауза 0.35×1.25 после «!»
+    assert probe(out)["duration"] == pytest.approx(2 * 1.08 + 0.4375, abs=0.08)
+    assert [w["text"] for w in words][:3] == ["Это", "доказали", "ИИ-агенты!"]
+    second = next(w for w in words if w["text"] == "Десять")
+    assert second["start"] == pytest.approx(1.08 + 0.4375 + 0.04, abs=0.08)
+    assert not list(tmp_path.glob("a.s*.wav"))  # временные куски удалены
+
+
+def test_corp_single_sentence_or_disabled_is_one_request(corp, monkeypatch, tmp_path):
+    sent = []
+
+    def fake_post(url, json=None, headers=None, timeout=None, **_):
+        sent.append(json["input"])
+        return httpx.Response(200, content=_tone_bytes(1.0))
+
+    monkeypatch.setattr(tts.httpx, "post", fake_post)
+    assert corp.synthesize("Одно предложение.", "gemini", 1.0, tmp_path / "a.wav") is None
+    monkeypatch.setenv("CORP_TTS_SENTENCE_GAP", "0")
+    corp.synthesize("Раз предложение. Два предложение.", "gemini", 1.0, tmp_path / "b.wav")
+    assert sent == ["Одно предложение.", "Раз предложение. Два предложение."]
+
+
+def test_sentence_gap_is_part_of_cache_key(corp, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
+    calls = []
+    monkeypatch.setattr(tts.httpx, "post", lambda *a, **k: calls.append(1) or httpx.Response(200, content=_tone_bytes(0.5)))
+    tts.synthesize("Фраза номер один. Фраза номер два.", "corp", "gemini")
+    tts.synthesize("Фраза номер один. Фраза номер два.", "corp", "gemini")
+    assert len(calls) == 2  # второй раз — из кеша
+    monkeypatch.setenv("CORP_TTS_SENTENCE_GAP", "0.5")
+    speech = tts.synthesize("Фраза номер один. Фраза номер два.", "corp", "gemini")
+    assert len(calls) == 4 and speech.timed  # другая пауза — заново; тайминги по предложениям сохранены
