@@ -5,13 +5,21 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Официальный Claude Code CLI — пишет сценарии по подписке Claude (AI_ENGINE=claude-code).
-# Не нужен — соберите с --build-arg INSTALL_CLAUDE_CODE=0.
+# Не нужен — соберите с --build-arg INSTALL_CLAUDE_CODE=0. Если установщик недоступен
+# (например, Claude не работает в регионе сервера), образ собирается без CLI — сайт остаётся рабочим.
 ARG INSTALL_CLAUDE_CODE=1
 ENV PATH="/root/.local/bin:${PATH}" \
     DISABLE_AUTOUPDATER=1 \
     DISABLE_TELEMETRY=1
 RUN if [ "$INSTALL_CLAUDE_CODE" = "1" ]; then \
-        curl -fsSL https://claude.ai/install.sh | bash && claude --version; \
+        if curl -fsSL -o /tmp/claude-install.sh https://claude.ai/install.sh \
+           && head -n 1 /tmp/claude-install.sh | grep -q '^#!' \
+           && bash /tmp/claude-install.sh && claude --version; then \
+            echo "Claude Code установлен"; \
+        else \
+            echo "ВНИМАНИЕ: Claude Code не установлен (установщик недоступен) — сценарии по подписке выключены"; \
+        fi; \
+        rm -f /tmp/claude-install.sh; \
     fi
 
 WORKDIR /app

@@ -108,6 +108,11 @@ docker compose exec reels claude setup-token   # откройте ссылку, 
 docker compose up -d --force-recreate            # с Traefik: -f docker-compose.yml -f docker-compose.traefik.yml
 ```
 
+> ⚠️ Claude (и подписка, и API) работает только из
+> [поддерживаемых стран](https://www.anthropic.com/supported-countries). С сервера в неподдерживаемом
+> регионе установщик вернёт страницу «App unavailable in region» — образ соберётся без CLI, а сайт
+> продолжит работать в черновом режиме.
+
 Токен живёт год; его можно получить и на своём компьютере (`claude setup-token`). Сайт вызывает
 `claude -p` в неинтерактивном режиме: бриф, тексты и превью кадров уходят в одном сообщении, ответ —
 строго по JSON-схеме раскадровки. Инструменты, MCP и пользовательские настройки CLI отключены — он
