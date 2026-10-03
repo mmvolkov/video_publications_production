@@ -171,7 +171,10 @@ def healthz() -> dict:
 
 @app.get("/api/status")
 def status() -> dict:
-    return {"ai": ai.ai_available(), "model": config.ANTHROPIC_MODEL, "n8n": bool(config.N8N_WEBHOOK_URL)}
+    which = ai.engine()
+    model = {"api": config.ANTHROPIC_MODEL, "claude-code": config.CLAUDE_CODE_MODEL or "по умолчанию в подписке"}
+    return {"ai": which != "draft", "engine": which, "engine_label": ai.ENGINE_LABELS[which],
+            "model": model.get(which, ""), "n8n": bool(config.N8N_WEBHOOK_URL)}
 
 
 @app.get("/api/tts")

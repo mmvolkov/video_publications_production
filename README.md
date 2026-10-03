@@ -24,8 +24,9 @@
    сценарий заново.
 7. **Публикация.** Скачайте видео и обложку, скопируйте подпись — или отправьте всё в n8n.
 
-Без ключа Anthropic сайт тоже работает: сценарий собирается «в черновом режиме» из ваших
-комментариев и текстов (это видно по метке в шапке).
+Сценарии пишет Claude — по **подписке Claude** через официальный Claude Code CLI или по **ключу
+Anthropic API** (см. «Кто пишет сценарии»). Без них сайт тоже работает: сценарий собирается
+«в черновом режиме» из ваших комментариев и текстов (это видно по метке в шапке).
 
 ## Запуск
 
@@ -35,7 +36,7 @@
 git clone https://github.com/mmvolkov/video_publications_production
 cd video_publications_production
 git checkout claude/confident-fermi-dq2s1a   # пока изменения не влиты в main
-cp .env.example .env      # впишите ANTHROPIC_API_KEY, CORP_TTS_API_KEY и др.
+cp .env.example .env      # впишите CLAUDE_CODE_OAUTH_TOKEN (или ANTHROPIC_API_KEY), CORP_TTS_API_KEY и др.
 docker compose up -d --build
 # сайт: http://localhost:8128
 ```
@@ -45,7 +46,7 @@ docker compose up -d --build
 ```bash
 cd /data/apps && git clone https://github.com/mmvolkov/video_publications_production reels && cd reels
 cp .env.example .env
-# в .env: ANTHROPIC_API_KEY, APP_PASSWORD (обязательно — сайт публичный),
+# в .env: CLAUDE_CODE_OAUTH_TOKEN (или ANTHROPIC_API_KEY), APP_PASSWORD (обязательно — сайт публичный),
 #         CORP_TTS_BASE_URL=http://tts:8000/v1 и CORP_TTS_API_KEY,
 #         PUBLIC_BASE_URL=https://reels.cloudsmasters.ru, при необходимости REELS_DOMAIN
 docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
@@ -74,7 +75,10 @@ uvicorn app.main:app --reload
 
 | Переменная | Зачем |
 |---|---|
-| `ANTHROPIC_API_KEY` | Ключ Claude. Без него — черновые сценарии без ИИ |
+| `AI_ENGINE` | Кто пишет сценарии: `auto` (по умолчанию), `api`, `claude-code`, `off` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Токен подписки Claude для Claude Code CLI (`claude setup-token`) |
+| `CLAUDE_CODE_MODEL`, `CLAUDE_CODE_TIMEOUT` | Модель для CLI (пусто — по умолчанию в подписке) и таймаут, с |
+| `ANTHROPIC_API_KEY` | Ключ Anthropic API (оплата по токенам) |
 | `ANTHROPIC_MODEL` | Модель, по умолчанию `claude-opus-5-5` |
 | `ANTHROPIC_EFFORT` | Глубина размышления: `low` / `medium` / `high` |
 | `APP_USER`, `APP_PASSWORD`, `APP_PASSWORD_HASH` | Вход на сайт (HTTP Basic), логин по умолчанию `admin`. Без настроек действует пароль по умолчанию — в коде хранится только его хеш (PBKDF2-SHA256). Свой пароль: `APP_PASSWORD` или, чтобы не держать его открытым текстом, `APP_PASSWORD_HASH` (сгенерировать: `python -m app.passwords 'пароль'`). `APP_PASSWORD=off` — без пароля. Значение с `$` пишите в одинарных кавычках |
@@ -83,6 +87,33 @@ uvicorn app.main:app --reload
 | `MAX_UPLOAD_MB` | Лимит на один файл (по умолчанию 500 МБ) |
 | `FONT_PATH` | Свой шрифт для титров (TTF с кириллицей) |
 | `TTS_DEFAULT_PROVIDER`, `CORP_TTS_*`, `EDGE_TTS_*`, `YANDEX_*`, `ELEVENLABS_*` | Озвучка — см. раздел ниже и `.env.example` |
+
+## Кто пишет сценарии
+
+| Движок | Как платится | Что нужно |
+|---|---|---|
+| `claude-code` — официальный Claude Code CLI | входит в подписку Claude Pro/Max | `CLAUDE_CODE_OAUTH_TOKEN` |
+| `api` — Anthropic API | по токенам, отдельно от подписки | `ANTHROPIC_API_KEY` |
+| `draft` — без ИИ | бесплатно | ничего |
+
+`AI_ENGINE=auto` берёт первое доступное: ключ API → Claude Code → черновик. Метка в шапке сайта
+показывает, какой движок работает сейчас.
+
+**Подписка через Claude Code.** CLI уже установлен в образ сайта (тот же контейнер; не нужен —
+`--build-arg INSTALL_CLAUDE_CODE=0`). Подключение:
+
+```bash
+docker compose exec reels claude setup-token   # откройте ссылку, войдите в аккаунт Claude, вставьте код
+# скопируйте выданный токен sk-ant-oat01-… в .env:  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-…
+docker compose up -d --force-recreate            # с Traefik: -f docker-compose.yml -f docker-compose.traefik.yml
+```
+
+Токен живёт год; его можно получить и на своём компьютере (`claude setup-token`). Сайт вызывает
+`claude -p` в неинтерактивном режиме: бриф, тексты и превью кадров уходят в одном сообщении, ответ —
+строго по JSON-схеме раскадровки. Инструменты, MCP и пользовательские настройки CLI отключены — он
+не читает файлы и не выполняет команды. Если в `.env` есть и `ANTHROPIC_API_KEY`, в режиме `auto`
+выбирается API; чтобы тратить именно подписку, поставьте `AI_ENGINE=claude-code` (ключ API в вызов
+CLI не передаётся). Запросы расходуют лимиты подписки так же, как работа в Claude Code.
 
 ## Озвучка
 

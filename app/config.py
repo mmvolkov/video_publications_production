@@ -8,6 +8,11 @@ DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parent.parent / "
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-5-5")
 ANTHROPIC_EFFORT = os.getenv("ANTHROPIC_EFFORT", "medium")
 
+# Claude Code по подписке (если нет ключа API): официальный CLI в неинтерактивном режиме
+CLAUDE_CODE_BIN = os.getenv("CLAUDE_CODE_BIN", "claude")
+CLAUDE_CODE_MODEL = os.getenv("CLAUDE_CODE_MODEL", "").strip()  # пусто — модель по умолчанию в подписке
+CLAUDE_CODE_TIMEOUT = int(os.getenv("CLAUDE_CODE_TIMEOUT", "600"))
+
 # Доступ к сайту (HTTP Basic), по порядку:
 #   APP_PASSWORD=off      — сайт открыт без пароля;
 #   APP_PASSWORD=...      — этот пароль;

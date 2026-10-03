@@ -39,9 +39,10 @@ async function guarded(fn) {
 async function loadStatus() {
   const s = await api("/api/status");
   const el = $("#ai-status");
-  el.textContent = s.ai ? "Claude подключён" : "Без ИИ: черновые сценарии";
+  el.textContent = s.ai ? `Сценарии: ${s.engine_label}` : "Без ИИ: черновые сценарии";
   el.className = "pill " + (s.ai ? "ok" : "warn");
-  el.title = s.ai ? `Модель: ${s.model}` : "Задайте ANTHROPIC_API_KEY, чтобы сценарии писал Claude";
+  el.title = s.ai ? `Модель: ${s.model}`
+    : "Задайте ANTHROPIC_API_KEY или войдите в Claude Code (CLAUDE_CODE_OAUTH_TOKEN), чтобы сценарии писал Claude";
 }
 
 async function loadProjects() {
@@ -377,7 +378,7 @@ function renderReels() {
       : `<div class="placeholder">${busy
           ? `<div>${esc(r.stage || "В очереди")}</div><div class="progress"><div style="width:${Math.round((r.progress || 0) * 100)}%"></div></div>`
           : r.status === "error" ? "⚠️ Ошибка" : ""}</div>`;
-    const sourceNote = r.script_source === "draft" ? " · черновой сценарий без ИИ" : "";
+    const sourceNote = { draft: " · черновой сценарий без ИИ", "claude-code": " · сценарий: Claude Code" }[r.script_source] || "";
     return `
       <article class="reel" data-id="${r.id}">
         <div>${player}</div>

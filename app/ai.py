@@ -9,6 +9,9 @@ import base64
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from . import config, storage
@@ -67,8 +70,42 @@ SYSTEM_PROMPT = """Ты — сильный SMM-продюсер и сценар�
 Если озвучка выключена — оставляй voice пустой строкой."""
 
 
+ENGINE_LABELS = {
+    "api": "Claude API",
+    "claude-code": "Claude Code (подписка)",
+    "draft": "без ИИ",
+}
+
+
+def _claude_code_logged_in() -> bool:
+    """Есть официальный CLI Claude Code и вход в него: токен `claude setup-token` или сохранённый логин."""
+    if not shutil.which(config.CLAUDE_CODE_BIN):
+        return False
+    if os.getenv("CLAUDE_CODE_OAUTH_TOKEN"):
+        return True
+    return (Path.home() / ".claude" / ".credentials.json").exists()
+
+
+def engine() -> str:
+    """Чем писать сценарии: 'api' (ключ Anthropic), 'claude-code' (подписка через CLI) или 'draft'.
+
+    AI_ENGINE=auto (по умолчанию) выбирает первое доступное в этом порядке.
+    """
+    wanted = os.getenv("AI_ENGINE", "auto").strip().lower()
+    has_api = bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
+    if wanted == "api":
+        return "api" if has_api else "draft"
+    if wanted in ("claude-code", "claude_code", "cli"):
+        return "claude-code" if _claude_code_logged_in() else "draft"
+    if wanted in ("off", "draft", "none"):
+        return "draft"
+    if has_api:
+        return "api"
+    return "claude-code" if _claude_code_logged_in() else "draft"
+
+
 def ai_available() -> bool:
-    return bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
+    return engine() != "draft"
 
 
 def _image_block(path: Path) -> dict:
@@ -151,6 +188,58 @@ def generate_with_claude(project: dict, options: dict) -> dict:
         raise RuntimeError("Ответ Claude обрезан по лимиту токенов, попробуйте ещё раз.")
     text = next((b.text for b in response.content if b.type == "text"), "")
     return json.loads(text)
+
+
+def generate_with_claude_code(project: dict, options: dict) -> dict:
+    """Сценарий через официальный Claude Code CLI в неинтерактивном режиме (`claude -p`).
+
+    Работает по подписке Claude (вход через `claude setup-token` → CLAUDE_CODE_OAUTH_TOKEN или
+    сохранённый логин). Запрос тот же, что для API: бриф, тексты и превью кадров картинками прямо
+    в сообщении (--input-format stream-json), ответ — строго по JSON-схеме (--json-schema).
+    Инструменты отключены (--tools ""), настройки и MCP пользователя не подгружаются: CLI здесь
+    только «мозг», он не читает файлы и не запускает команды.
+    """
+    message = {"type": "user", "message": {"role": "user", "content": build_messages(project, options)[0]["content"]}}
+    cmd = [
+        config.CLAUDE_CODE_BIN, "-p",
+        "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+        "--system-prompt", SYSTEM_PROMPT,
+        "--json-schema", json.dumps(SCRIPT_SCHEMA, ensure_ascii=False),
+        "--tools", "",
+        "--setting-sources", "",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+    ]
+    if config.CLAUDE_CODE_MODEL:
+        cmd += ["--model", config.CLAUDE_CODE_MODEL]
+    env = dict(os.environ)
+    # ключ API у CLI в приоритете над подпиской — в этом режиме он не нужен
+    env.pop("ANTHROPIC_API_KEY", None)
+    with tempfile.TemporaryDirectory(prefix="reels-cc-") as workdir:
+        try:
+            proc = subprocess.run(cmd, input=json.dumps(message, ensure_ascii=False) + "\n", capture_output=True,
+                                  text=True, timeout=config.CLAUDE_CODE_TIMEOUT, cwd=workdir, env=env)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Claude Code не ответил за {config.CLAUDE_CODE_TIMEOUT} с") from exc
+
+    result = None
+    for line in proc.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "result":
+            result = event
+    if result is None:
+        tail = (proc.stderr or proc.stdout or "").strip()[-400:]
+        raise RuntimeError(f"Claude Code завершился без результата (код {proc.returncode}): {tail}")
+    if result.get("is_error") or result.get("subtype") != "success":
+        detail = result.get("result") or result.get("subtype") or "неизвестная ошибка"
+        raise RuntimeError(f"Claude Code: {detail}")
+    script = result.get("structured_output")
+    if not isinstance(script, dict):
+        script = json.loads(result.get("result") or "{}")
+    return script
 
 
 def _clip(text: str, limit: int) -> str:
@@ -250,7 +339,10 @@ def normalize_script(script: dict, project: dict) -> dict:
 
 
 def generate_script(project: dict, options: dict) -> tuple[dict, str]:
-    """Вернуть (сценарий, источник): источник — 'claude' или 'draft'."""
-    if ai_available():
+    """Вернуть (сценарий, источник): 'claude' (API), 'claude-code' (подписка) или 'draft'."""
+    which = engine()
+    if which == "api":
         return normalize_script(generate_with_claude(project, options), project), "claude"
+    if which == "claude-code":
+        return normalize_script(generate_with_claude_code(project, options), project), "claude-code"
     return normalize_script(generate_fallback(project, options), project), "draft"
