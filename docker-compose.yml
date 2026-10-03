@@ -5,6 +5,18 @@ services:
     container_name: reels-studio
     restart: unless-stopped
     env_file: .env
+    # Весь исходящий трафик — через xray-proxy основного стека (как у hermes-3):
+    # контейнер уже в сети dedicated_server_default, имя xray-proxy резолвится оттуда.
+    # Сам xray решает маршрут: anthropic.com / claude.ai идут в туннель (с IP сервера
+    # Anthropic отвечает 403 «Request not allowed»), остальное — напрямую.
+    # Свои сервисы и localhost мимо прокси (NO_PROXY).
+    environment:
+      - HTTPS_PROXY=http://xray-proxy:8080
+      - https_proxy=http://xray-proxy:8080
+      - HTTP_PROXY=http://xray-proxy:8080
+      - http_proxy=http://xray-proxy:8080
+      - NO_PROXY=tts,tts.cloudsmasters.ru,traefik,localhost,127.0.0.1,.local
+      - no_proxy=tts,tts.cloudsmasters.ru,traefik,localhost,127.0.0.1,.local
     ports:
       # 8123–8127 на сервере заняты (transcriptions, diarization, ai-kb, tts)
       - "${REELS_PORT:-8128}:8000"
