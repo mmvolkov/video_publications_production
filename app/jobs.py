@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from . import ai, config, render, storage
+from . import ai, config, render, storage, tts
 
 log = logging.getLogger("reels")
 # Рендер грузит процессор, поэтому собираем рилсы по одному.
@@ -46,7 +46,8 @@ def render_reel(project: dict, reel: dict) -> None:
     pdir = storage.project_dir(project_id)
     materials = {m["id"]: m for m in project["materials"]}
 
-    music_id = (reel.get("options") or {}).get("music_id")
+    options = reel.get("options") or {}
+    music_id = options.get("music_id")
     music = next((m for m in project["materials"] if m["kind"] == "audio" and (not music_id or m["id"] == music_id)), None)
 
     def progress(fraction: float, stage: str) -> None:
@@ -59,10 +60,24 @@ def render_reel(project: dict, reel: dict) -> None:
         pdir / "reels" / reel_id,
         music=pdir / "materials" / music["file"] if music else None,
         progress=progress,
+        voiceover=voiceover_settings(options),
     )
-    storage.update_reel(project_id, reel_id, status="done", progress=1.0, stage="Готово",
+    # сцены могли удлиниться под озвучку — сохраняем реальные длительности в сценарий
+    script = dict(reel["script"])
+    script["scenes"] = [dict(scene, duration=d) for scene, d in zip(script["scenes"], result["durations"])]
+    storage.update_reel(project_id, reel_id, status="done", progress=1.0, stage="Готово", script=script,
                         duration=result["duration"], finished_at=storage.now_iso(),
                         version=int(reel.get("version") or 0) + 1)
+
+
+def voiceover_settings(options: dict) -> dict | None:
+    if not options.get("voiceover"):
+        return None
+    return {
+        "provider": options.get("tts_provider") or tts.default_provider(),
+        "voice": options.get("tts_voice") or "",
+        "speed": options.get("tts_speed") or 1.0,
+    }
 
 
 def public_url(path: str) -> str:

@@ -78,6 +78,7 @@
             <label>Музыка
               <select name="music_id" id="music-select"></select>
             </label>
+            <div class="span-2 voice-box" id="voice-controls"></div>
             <label class="span-2">Пожелания к этому ролику (необязательно)
               <input name="wishes" placeholder="Например: сделай акцент на отзывах, начни с цифры">
             </label>
@@ -100,12 +101,13 @@
         <button class="btn ghost" value="cancel" formnovalidate>✕</button>
       </header>
       <label>Текст на обложке<input name="cover_text" maxlength="80"></label>
+      <div class="voice-box" id="editor-voice"></div>
       <div id="scene-list" class="scene-list"></div>
       <button type="button" id="add-scene" class="btn ghost">+ Сцена</button>
       <label>Подпись к посту<textarea name="caption" rows="6"></textarea></label>
       <label>Хэштеги<input name="hashtags" placeholder="#reels #маркетинг"></label>
       <footer class="dialog-foot">
-        <span id="editor-total" class="muted"></span>
+        <span class="muted"><span id="editor-total"></span><br>Сцены с озвучкой длятся столько, сколько говорит диктор.</span>
         <button class="btn primary" value="save">Сохранить и пересобрать</button>
       </footer>
     </form>

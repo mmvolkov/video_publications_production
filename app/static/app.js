@@ -5,7 +5,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const BUSY = ["queued", "scripting", "rendering"];
 const KIND_LABEL = { image: "Фото", video: "Видео", audio: "Музыка", text: "Текст" };
 
-let state = { projects: [], project: null, pollTimer: null, editingReel: null };
+let state = { projects: [], project: null, pollTimer: null, editingReel: null, tts: { providers: [], default: "" } };
 
 async function api(path, options = {}) {
   const opts = { ...options, headers: { ...(options.headers || {}) } };
@@ -71,6 +71,7 @@ function renderProject() {
   $("#brief-card").open = !p.brief?.topic;
   renderMaterials();
   renderReels();
+  mountVoice($("#voice-controls"));
   schedulePoll();
 }
 
@@ -193,6 +194,92 @@ $("#note-form").addEventListener("submit", (e) => guarded(async () => {
   renderMaterials();
 }));
 
+// ---------- озвучка ----------
+
+const SPEEDS = [0.9, 1.0, 1.1, 1.2, 1.3];
+
+function loadVoicePrefs() {
+  try { return JSON.parse(localStorage.getItem("voicePrefs") || "{}"); } catch { return {}; }
+}
+function saveVoicePrefs(v) {
+  try { localStorage.setItem("voicePrefs", JSON.stringify(v)); } catch { /* приватный режим */ }
+}
+
+function providerById(id) { return state.tts.providers.find((p) => p.id === id); }
+
+function mountVoice(box, opts = {}) {
+  const prefs = loadVoicePrefs();
+  const providerId = opts.tts_provider || prefs.tts_provider || state.tts.default;
+  box.innerHTML = `
+    <label class="check"><input type="checkbox" data-v="voiceover"> 🎙 Озвучить диктором</label>
+    <div class="voice-row">
+      <label>Провайдер<select data-v="provider">${state.tts.providers.map((p) =>
+        `<option value="${p.id}" ${p.available ? "" : "disabled"}>${esc(p.name)}${p.available ? "" : " — нет ключа"}</option>`).join("")}</select></label>
+      <label>Голос<select data-v="voice"></select></label>
+      <label>Темп<select data-v="speed">${SPEEDS.map((x) => `<option value="${x}">${x.toFixed(1)}×</option>`).join("")}</select></label>
+      <button type="button" class="btn" data-v="preview">▶ Прослушать</button>
+    </div>
+    <div class="voice-extra muted" data-v="note"></div>
+    <audio data-v="audio" controls class="hidden"></audio>`;
+  const q = (name) => box.querySelector(`[data-v=${name}]`);
+  const fillVoices = (selected) => {
+    const p = providerById(q("provider").value);
+    q("voice").innerHTML = (p?.voices || []).map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+    if (selected && [...q("voice").options].some((o) => o.value === selected)) q("voice").value = selected;
+    q("note").textContent = p?.note || "";
+  };
+  const toggle = () => box.classList.toggle("voice-off", !q("voiceover").checked);
+
+  q("voiceover").checked = opts.voiceover ?? prefs.voiceover ?? false;
+  if (providerById(providerId)?.available) q("provider").value = providerId;
+  fillVoices(opts.tts_voice || prefs.tts_voice);
+  q("speed").value = String(opts.tts_speed || prefs.tts_speed || 1.0);
+  if (!q("speed").value) q("speed").value = "1";
+  toggle();
+
+  q("voiceover").addEventListener("change", toggle);
+  q("provider").addEventListener("change", () => fillVoices());
+  q("preview").addEventListener("click", () => guarded(async () => {
+    const btn = q("preview");
+    btn.disabled = true;
+    btn.textContent = "Синтезирую…";
+    try {
+      const res = await fetch("/api/tts/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: q("provider").value, voice: q("voice").value, speed: Number(q("speed").value) }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Ошибка ${res.status}`);
+      const audio = q("audio");
+      audio.src = URL.createObjectURL(await res.blob());
+      audio.classList.remove("hidden");
+      audio.play().catch(() => {});
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "▶ Прослушать";
+    }
+  }));
+}
+
+function readVoice(box) {
+  const q = (name) => box.querySelector(`[data-v=${name}]`);
+  const v = {
+    voiceover: q("voiceover").checked,
+    tts_provider: q("provider").value,
+    tts_voice: q("voice").value,
+    tts_speed: Number(q("speed").value) || 1,
+  };
+  saveVoicePrefs(v);
+  return v;
+}
+
+function voiceLabel(options) {
+  if (!options?.voiceover) return "";
+  const p = providerById(options.tts_provider);
+  const voice = p?.voices.find((v) => v.id === options.tts_voice)?.name || options.tts_voice || "";
+  return ` · 🎙 ${voice.split(" — ")[0]}${p ? ` (${p.name})` : ""}`;
+}
+
 // ---------- рилсы ----------
 
 $("#reel-form").addEventListener("submit", (e) => guarded(async () => {
@@ -200,6 +287,7 @@ $("#reel-form").addEventListener("submit", (e) => guarded(async () => {
   const data = Object.fromEntries(new FormData(e.target));
   data.duration = Number(data.duration);
   if (data.music_id === "none") data.music_id = "__none__";
+  Object.assign(data, readVoice($("#voice-controls")));
   const reel = await api(`/api/projects/${state.project.id}/reels`, { method: "POST", body: data });
   state.project.reels.push(reel);
   renderReels();
@@ -231,10 +319,10 @@ function renderReels() {
         <div>${player}</div>
         <div>
           <h3>${esc(s.title || "Рилс")}</h3>
-          <div class="meta muted">${new Date(r.created_at).toLocaleString("ru-RU")}${r.duration ? ` · ${r.duration} с` : ""}${sourceNote}</div>
+          <div class="meta muted">${new Date(r.created_at).toLocaleString("ru-RU")}${r.duration ? ` · ${r.duration} с` : ""}${voiceLabel(r.options)}${sourceNote}</div>
           ${r.status === "error" ? `<p class="error">${esc(r.error)}</p>` : ""}
           ${s.caption ? `<div class="caption">${esc(s.caption)}<div class="tags">${esc((s.hashtags || []).join(" "))}</div></div>` : ""}
-          ${s.scenes ? `<ol class="scenes-preview">${s.scenes.map((sc) => `<li>${esc(sc.text || "(без текста)")} — ${sc.duration} с</li>`).join("")}</ol>` : ""}
+          ${s.scenes ? `<ol class="scenes-preview">${s.scenes.map((sc) => `<li>${esc(sc.text || "(без текста)")} — ${sc.duration} с${sc.voice ? `<br><span class="voice-text">🎙 ${esc(sc.voice)}</span>` : ""}</li>`).join("")}</ol>` : ""}
           <div class="actions">
             ${r.status === "done" ? `
               <a class="btn primary small" href="${reelUrl(r, "video", true)}">⬇ Видео</a>
@@ -315,12 +403,13 @@ function sceneHtml(sc) {
     <div>
       <div class="row">
         <select data-f="material_id">${materialOptions(sc.material_id)}</select>
-        <input type="number" data-f="duration" value="${sc.duration}" min="0.5" max="30" step="0.5" title="Секунд">
+        <input type="number" data-f="duration" value="${sc.duration}" min="0.5" max="30" step="any" title="Секунд">
         <button type="button" class="btn small ghost" data-move="-1" title="Выше">↑</button>
         <button type="button" class="btn small ghost" data-move="1" title="Ниже">↓</button>
         <button type="button" class="btn small ghost danger" data-remove title="Удалить сцену">✕</button>
       </div>
-      <textarea data-f="text" rows="2" maxlength="300" placeholder="Текст на экране">${esc(sc.text)}</textarea>
+      <label class="scene-field">Текст на экране<textarea data-f="text" rows="2" maxlength="300">${esc(sc.text)}</textarea></label>
+      <label class="scene-field">🎙 Озвучка<textarea data-f="voice" rows="2" maxlength="600" placeholder="Пусто — сцена без голоса">${esc(sc.voice)}</textarea></label>
       <input type="hidden" data-f="start" value="${sc.start || 0}">
     </div>
   </div>`;
@@ -331,6 +420,7 @@ function readScenes() {
     material_id: $("[data-f=material_id]", el).value,
     duration: Number($("[data-f=duration]", el).value) || 3,
     text: $("[data-f=text]", el).value,
+    voice: $("[data-f=voice]", el).value,
     start: Number($("[data-f=start]", el).value) || 0,
   }));
 }
@@ -349,6 +439,7 @@ function openEditor(reel) {
   f.elements.caption.value = s.caption || "";
   f.elements.hashtags.value = (s.hashtags || []).join(" ");
   renderScenes(s.scenes);
+  mountVoice($("#editor-voice"), reel.options || {});
   $("#editor").returnValue = "";
   $("#editor").showModal();
 }
@@ -379,6 +470,7 @@ $("#editor").addEventListener("close", () => guarded(async () => {
     caption: f.elements.caption.value,
     hashtags: f.elements.hashtags.value.split(/[\s,]+/).filter(Boolean),
     scenes: readScenes(),
+    voice_options: readVoice($("#editor-voice")),
   };
   const reel = await api(`/api/projects/${state.project.id}/reels/${state.editingReel.id}/script`, { method: "PUT", body });
   Object.assign(state.editingReel, reel);
@@ -391,6 +483,7 @@ $("#editor").addEventListener("close", () => guarded(async () => {
 
 (async () => {
   await guarded(loadStatus);
+  await guarded(async () => { state.tts = await api("/api/tts"); });
   await guarded(loadProjects);
   const id = location.hash.slice(1);
   if (id && state.projects.some((p) => p.id === id)) guarded(() => openProject(id));

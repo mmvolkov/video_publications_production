@@ -31,9 +31,10 @@ SCRIPT_SCHEMA = {
                         "description": "id фото/видео из материалов или пустая строка для текстовой карточки",
                     },
                     "text": {"type": "string", "description": "Текст на экране, до 90 символов"},
+                    "voice": {"type": "string", "description": "Фраза диктора для этой сцены или пустая строка, если озвучка выключена"},
                     "duration": {"type": "number", "description": "Длительность сцены в секундах (1.5–8)"},
                 },
-                "required": ["material_id", "text", "duration"],
+                "required": ["material_id", "text", "voice", "duration"],
                 "additionalProperties": False,
             },
         },
@@ -56,7 +57,14 @@ SYSTEM_PROMPT = """Ты — сильный SMM-продюсер и сценар�
 - Последняя сцена — понятный призыв к действию.
 - Суммарная длительность — близко к целевой.
 - Подпись к посту: живая, 300–900 символов, с абзацами и эмодзи по делу, в конце призыв. Хэштеги — отдельным списком, 5–12 штук, каждый начинается с «#».
-- Пиши на языке, на котором написан бриф (по умолчанию — русский)."""
+- Пиши на языке, на котором написан бриф (по умолчанию — русский).
+
+Озвучка (если в брифе сказано, что она включена):
+- В поле voice — живая разговорная фраза диктора для сцены: 1–2 коротких предложения, без хэштегов, эмодзи и списков.
+- Озвучка дополняет текст на экране, а не дублирует его слово в слово; на экране — короткий тезис, голосом — мысль целиком.
+- Длительность сцены ставь под фразу: примерно 14 символов фразы в секунду плюс полсекунды.
+- Числа и сокращения пиши так, как их надо произнести («двадцать процентов», а не «20%»).
+Если озвучка выключена — оставляй voice пустой строкой."""
 
 
 def ai_available() -> bool:
@@ -82,6 +90,7 @@ def _brief_text(project: dict, options: dict) -> str:
         if brief.get(key):
             lines.append(f"{label}: {brief[key]}")
     lines.append(f"Целевая длительность: {options.get('duration', 30)} секунд")
+    lines.append("Озвучка: " + ("включена — напиши фразы диктора" if options.get("voiceover") else "выключена"))
     if options.get("wishes"):
         lines.append(f"Пожелания к этому рилсу: {options['wishes']}")
     return "\n".join(lines)
@@ -168,7 +177,9 @@ def generate_fallback(project: dict, options: dict) -> dict:
             lines.extend(_sentences(m.get("text", "")))
 
     target = float(options.get("duration", 30))
-    scenes = [{"material_id": "", "text": brief.get("topic") or project["title"], "duration": 2.5}]
+    speak = bool(options.get("voiceover"))
+    hook = brief.get("topic") or project["title"]
+    scenes = [{"material_id": "", "text": hook, "voice": hook if speak else "", "duration": 2.5}]
     count = max(1, min(len(visual) or len(lines) or 1, MAX_SCENES - 2))
     per_scene = max(2.0, min(6.0, (target - 5.5) / count))
     for i in range(count):
@@ -178,8 +189,10 @@ def generate_fallback(project: dict, options: dict) -> dict:
         if m and m["kind"] == "video" and m.get("duration"):
             duration = min(duration, m["duration"])
         if m or text:
-            scenes.append({"material_id": m["id"] if m else "", "text": _clip(text, 120), "duration": round(duration, 1)})
-    scenes.append({"material_id": "", "text": brief.get("cta") or "Подписывайтесь, чтобы не пропустить новое", "duration": 3})
+            scenes.append({"material_id": m["id"] if m else "", "text": _clip(text, 120),
+                           "voice": text if speak else "", "duration": round(duration, 1)})
+    cta = brief.get("cta") or "Подписывайтесь, чтобы не пропустить новое"
+    scenes.append({"material_id": "", "text": cta, "voice": cta if speak else "", "duration": 3})
 
     caption = brief.get("topic") or project["title"]
     if lines:
@@ -212,9 +225,10 @@ def normalize_script(script: dict, project: dict) -> dict:
         if m and m["kind"] == "video" and m.get("duration"):
             duration = min(duration, max(1.0, m["duration"]))
         text = str(s.get("text") or "").strip()
-        if not mid and not text:
+        voice = str(s.get("voice") or "").strip()
+        if not mid and not text and not voice:
             continue
-        scene = {"material_id": mid, "text": text, "duration": round(duration, 2)}
+        scene = {"material_id": mid, "text": text, "voice": voice, "duration": round(duration, 2)}
         start = float(s.get("start") or 0)
         if m and m["kind"] == "video" and start > 0:
             scene["start"] = min(start, max(0.0, (m.get("duration") or 0) - 0.5))

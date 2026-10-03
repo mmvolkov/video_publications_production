@@ -198,6 +198,27 @@ def make_cover(first_still: Path, text: str, out: Path) -> None:
     img.convert("RGB").save(out, "JPEG", quality=90)
 
 
+VOICE_LEAD = 0.2   # пауза перед фразой диктора в сцене
+VOICE_TAIL = 0.35  # пауза после фразы
+MUSIC_UNDER_VOICE = 0.18
+
+
+def _frames_exact(duration: float) -> float:
+    """Длительность, кратная кадру, — чтобы звук и видео не расходились по сценам."""
+    return max(1, round(duration * config.FPS)) / config.FPS
+
+
+def _audio_segment(voice: Path | None, duration: float, out: Path) -> None:
+    fmt = ["-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", "-t", f"{duration:.4f}"]
+    if voice:
+        delay = int(VOICE_LEAD * 1000)
+        run(["ffmpeg", "-y", "-v", "error", "-i", str(voice),
+             "-af", f"aresample=44100,adelay={delay}:all=1,apad", *fmt, str(out)])
+    else:
+        run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+             *fmt, str(out)])
+
+
 def render_reel(
     script: dict,
     materials: dict[str, dict],
@@ -205,21 +226,42 @@ def render_reel(
     out_dir: Path,
     music: Path | None = None,
     progress: Progress | None = None,
+    voiceover: dict | None = None,
 ) -> dict:
-    """Собрать reel.mp4 и cover.jpg в out_dir. Возвращает {duration, video, cover}."""
+    """Собрать reel.mp4 и cover.jpg в out_dir.
+
+    voiceover = {"provider", "voice", "speed"} — озвучить поле scene["voice"] каждой сцены;
+    длительность такой сцены подстраивается под фразу диктора. Возвращает {duration, durations, video, cover}.
+    """
     progress = progress or (lambda *_: None)
     work = out_dir / "work"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
 
     scenes = script["scenes"]
+    voices: list[Path | None] = [None] * len(scenes)
+    durations = [float(s["duration"]) for s in scenes]
+    if voiceover:
+        from . import tts
+
+        for i, scene in enumerate(scenes):
+            text = (scene.get("voice") or "").strip()
+            if not text:
+                continue
+            progress(0.02 + 0.13 * i / len(scenes), f"Озвучка {i + 1} из {len(scenes)}")
+            path, length = tts.synthesize(text, voiceover.get("provider", ""), voiceover.get("voice", ""),
+                                          float(voiceover.get("speed") or 1.0))
+            voices[i] = path
+            # сцена с озвучкой длится ровно столько, сколько говорит диктор (+ паузы)
+            durations[i] = max(1.5, length + VOICE_LEAD + VOICE_TAIL)
+    durations = [_frames_exact(d) for d in durations]
+
     segments: list[Path] = []
     stills: list[Path] = []
-    total = 0.0
     for i, scene in enumerate(scenes):
-        progress(0.05 + 0.8 * i / len(scenes), f"Сцена {i + 1} из {len(scenes)}")
+        progress(0.15 + 0.7 * i / len(scenes), f"Сцена {i + 1} из {len(scenes)}")
         material = materials.get(scene.get("material_id") or "")
-        duration = float(scene["duration"])
+        duration = durations[i]
         overlay = work / f"text_{i:02d}.png"
         segment = work / f"seg_{i:02d}.mp4"
         still = work / f"still_{i:02d}.jpg"
@@ -236,7 +278,7 @@ def render_reel(
             render_image_segment(still, overlay, duration, segment, zoom_in=i % 2 == 0)
         segments.append(segment)
         stills.append(still)
-        total += duration
+    total = sum(durations)
 
     progress(0.88, "Склейка")
     concat_list = work / "list.txt"
@@ -245,21 +287,49 @@ def render_reel(
     run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(silent)])
 
     progress(0.94, "Звук")
-    video = out_dir / "reel.mp4"
-    fade_start = max(0.0, total - 1.5)
+    inputs = ["-i", str(silent)]
+    graph: list[str] = []
+    voice_label = music_label = None
+    if any(voices):
+        parts = []
+        for i, (voice, duration) in enumerate(zip(voices, durations)):
+            part = work / f"voice_{i:02d}.wav"
+            _audio_segment(voice, duration, part)
+            parts.append(part)
+        voice_list = work / "voice.txt"
+        voice_list.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
+        voice_track = work / "voice.wav"
+        run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(voice_list),
+             "-c", "copy", str(voice_track)])
+        inputs += ["-i", str(voice_track)]
+        voice_label = f"[{inputs.count('-i') - 1}:a]"
     if music and music.exists():
-        audio_in = ["-stream_loop", "-1", "-i", str(music)]
-        audio_filter = f"afade=t=in:st=0:d=0.5,afade=t=out:st={fade_start:.2f}:d=1.5,volume=0.85"
+        inputs += ["-stream_loop", "-1", "-i", str(music)]
+        idx = inputs.count("-i") - 1
+        level = MUSIC_UNDER_VOICE if voice_label else 0.85
+        fade_start = max(0.0, total - 1.5)
+        graph.append(f"[{idx}:a]aresample=44100,afade=t=in:st=0:d=0.5,"
+                     f"afade=t=out:st={fade_start:.2f}:d=1.5,volume={level}[music]")
+        music_label = "[music]"
+    if voice_label and music_label:
+        graph.append(f"{voice_label}{music_label}amix=inputs=2:duration=first:normalize=0[aout]")
+    elif voice_label:
+        graph.append(f"{voice_label}anull[aout]")
+    elif music_label:
+        graph.append(f"{music_label}anull[aout]")
     else:
-        audio_in = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-        audio_filter = "anull"
-    run(["ffmpeg", "-y", "-v", "error", "-i", str(silent), *audio_in,
-         "-filter:a", audio_filter, "-map", "0:v", "-map", "1:a", "-c:v", "copy",
-         "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-t", f"{total:.2f}",
+        inputs += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+        graph.append("[1:a]anull[aout]")
+
+    video = out_dir / "reel.mp4"
+    run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", ";".join(graph),
+         "-map", "0:v", "-map", "[aout]", "-c:v", "copy",
+         "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2", "-t", f"{total:.3f}",
          "-movflags", "+faststart", str(video)])
 
     cover = out_dir / "cover.jpg"
     make_cover(stills[0], script.get("cover_text") or "", cover)
     shutil.rmtree(work, ignore_errors=True)
     progress(1.0, "Готово")
-    return {"duration": round(total, 2), "video": video.name, "cover": cover.name}
+    return {"duration": round(total, 2), "durations": [round(d, 2) for d in durations],
+            "video": video.name, "cover": cover.name}

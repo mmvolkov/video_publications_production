@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import ai, config, jobs, media, storage
+from . import ai, config, jobs, media, storage, tts
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -86,7 +86,14 @@ class MaterialPatch(BaseModel):
     name: Optional[str] = Field(None, max_length=200)
 
 
-class ReelIn(BaseModel):
+class VoiceOptions(BaseModel):
+    voiceover: bool = False
+    tts_provider: str = Field("", max_length=40)
+    tts_voice: str = Field("", max_length=120)
+    tts_speed: float = Field(1.0, ge=0.5, le=2.0)
+
+
+class ReelIn(VoiceOptions):
     duration: int = Field(30, ge=7, le=90)
     wishes: str = Field("", max_length=2000)
     music_id: str = ""
@@ -95,6 +102,7 @@ class ReelIn(BaseModel):
 class Scene(BaseModel):
     material_id: str = ""
     text: str = Field("", max_length=300)
+    voice: str = Field("", max_length=600)
     duration: float = Field(3, ge=0.5, le=30)
     start: float = Field(0, ge=0)
 
@@ -105,6 +113,14 @@ class ScriptIn(BaseModel):
     scenes: list[Scene] = Field(..., min_length=1, max_length=30)
     caption: str = ""
     hashtags: list[str] = []
+    voice_options: Optional[VoiceOptions] = None
+
+
+class PreviewIn(BaseModel):
+    provider: str = Field(..., max_length=40)
+    voice: str = Field("", max_length=120)
+    speed: float = Field(1.0, ge=0.5, le=2.0)
+    text: str = Field("Привет! Так будет звучать озвучка вашего рилса.", min_length=1, max_length=300)
 
 
 # ---------- helpers ----------
@@ -114,6 +130,16 @@ def _project_or_404(project_id: str) -> dict:
         return storage.get_project(project_id)
     except KeyError:
         raise HTTPException(404, "Проект не найден")
+
+
+def _check_voice(opts: VoiceOptions) -> None:
+    if not opts.voiceover:
+        return
+    provider = tts.PROVIDERS.get(opts.tts_provider or tts.default_provider())
+    if provider is None:
+        raise HTTPException(400, "Неизвестный провайдер озвучки")
+    if not provider.available():
+        raise HTTPException(400, f"Провайдер «{provider.name}» не настроен — добавьте ключ в .env")
 
 
 def _item_or_404(items: list[dict], item_id: str, what: str) -> dict:
@@ -133,6 +159,21 @@ def healthz() -> dict:
 @app.get("/api/status")
 def status() -> dict:
     return {"ai": ai.ai_available(), "model": config.ANTHROPIC_MODEL, "n8n": bool(config.N8N_WEBHOOK_URL)}
+
+
+@app.get("/api/tts")
+def tts_providers() -> dict:
+    return tts.describe()
+
+
+@app.post("/api/tts/preview")
+def tts_preview(body: PreviewIn) -> FileResponse:
+    """Прослушать голос до сборки рилса."""
+    try:
+        path, _ = tts.synthesize(body.text, body.provider, body.voice, body.speed)
+    except tts.TTSError as exc:
+        raise HTTPException(400, str(exc))
+    return FileResponse(path, media_type="audio/mpeg" if path.suffix == ".mp3" else "audio/wav")
 
 
 @app.get("/api/projects")
@@ -288,6 +329,7 @@ def material_thumb(project_id: str, material_id: str) -> FileResponse:
 @app.post("/api/projects/{project_id}/reels")
 def create_reel(project_id: str, body: ReelIn) -> dict:
     project = _project_or_404(project_id)
+    _check_voice(body)
     if not any(m["kind"] in ("image", "video", "text") for m in project["materials"]):
         raise HTTPException(400, "Сначала добавьте материалы: фото, видео или текст")
     reel = {"id": storage.new_id(), "status": "queued", "progress": 0, "stage": "В очереди",
@@ -305,7 +347,12 @@ def update_script(project_id: str, reel_id: str, body: ScriptIn) -> dict:
     if reel.get("status") in ("queued", "scripting", "rendering"):
         raise HTTPException(409, "Рилс ещё собирается")
     script = ai.normalize_script(body.model_dump(), project)
-    storage.update_reel(project_id, reel_id, script=script, status="queued", stage="В очереди", progress=0, error=None)
+    options = dict(reel.get("options") or {})
+    if body.voice_options is not None:
+        _check_voice(body.voice_options)
+        options.update(body.voice_options.model_dump())
+    storage.update_reel(project_id, reel_id, script=script, options=options,
+                        status="queued", stage="В очереди", progress=0, error=None)
     jobs.submit(project_id, reel_id, with_script=False)
     return storage.find(storage.get_project(project_id)["reels"], reel_id)
 

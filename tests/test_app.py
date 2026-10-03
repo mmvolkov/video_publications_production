@@ -120,10 +120,11 @@ def test_claude_script_is_used(client, media_files, monkeypatch):
     assert reel["status"] == "done", reel.get("error")
     assert reel["script_source"] == "claude"
     assert reel["script"]["hashtags"] == ["#маркетинг", "#reels"]
-    assert reel["script"]["scenes"][2] == {"material_id": "", "text": "Несуществующий кадр станет карточкой", "duration": 15.0}
+    assert reel["script"]["scenes"][2] == {"material_id": "", "text": "Несуществующий кадр станет карточкой", "voice": "", "duration": 15.0}
     content = calls["messages"][0]["content"]
     assert any(b["type"] == "image" for b in content)
     assert "дерзко" in content[0]["text"]
+    assert "Озвучка: выключена" in content[0]["text"]
 
 
 def test_basic_auth(client, monkeypatch):
