@@ -246,6 +246,7 @@ function mountVoice(box, opts = {}) {
       <span class="muted span-wide" data-v="delivery-hint"></span>
     </div>
     <label class="check voice-extra"><input type="checkbox" data-v="karaoke"> Караоке-субтитры (подсветка слова, которое звучит)</label>
+    <label class="check"><input type="checkbox" data-v="clip_audio"> 🎬 Оставить звук видео (под диктором — тише)</label>
     <div class="voice-extra muted" data-v="note"></div>
     <audio data-v="audio" controls class="hidden"></audio>`;
   const q = (name) => box.querySelector(`[data-v=${name}]`);
@@ -274,6 +275,7 @@ function mountVoice(box, opts = {}) {
   fillVoices(opts.tts_voice || prefs.tts_voice);
   q("speed").value = String(opts.tts_speed || prefs.tts_speed || 1.0);
   q("karaoke").checked = opts.karaoke ?? prefs.karaoke ?? true;
+  q("clip_audio").checked = opts.clip_audio ?? prefs.clip_audio ?? false;
   const delivery = deliveryFromInstruct("tts_instruct" in opts ? opts.tts_instruct : prefs.tts_instruct);
   q("delivery").value = delivery.id;
   q("custom").value = delivery.custom;
@@ -329,6 +331,7 @@ function readVoice(box) {
     tts_voice: q("voice").value,
     tts_speed: Number(q("speed").value) || 1,
     karaoke: q("karaoke").checked,
+    clip_audio: q("clip_audio").checked,
     tts_instruct: readInstruct(box),
   };
   saveVoicePrefs(v);
@@ -462,6 +465,10 @@ function materialOptions(selected) {
     `<option value="${m.id}" ${m.id === selected ? "selected" : ""}>${KIND_LABEL[m.kind]}: ${esc(m.note || m.name)}</option>`).join("");
 }
 
+function isVideo(id) {
+  return state.project.materials.some((m) => m.id === id && m.kind === "video");
+}
+
 function sceneHtml(sc) {
   const thumb = sc.material_id ? `/api/projects/${state.project.id}/materials/${sc.material_id}/thumb` : "";
   return `<div class="scene">
@@ -474,9 +481,11 @@ function sceneHtml(sc) {
         <button type="button" class="btn small ghost" data-move="1" title="Ниже">↓</button>
         <button type="button" class="btn small ghost danger" data-remove title="Удалить сцену">✕</button>
       </div>
-      <label class="scene-field">Текст на экране<textarea data-f="text" rows="2" maxlength="300">${esc(sc.text)}</textarea></label>
+      <label class="scene-field">Текст на экране <span class="muted">— *слово* в звёздочках выделится жёлтым</span><textarea data-f="text" rows="2" maxlength="300">${esc(sc.text)}</textarea></label>
       <label class="scene-field">🎙 Озвучка<textarea data-f="voice" rows="2" maxlength="600" placeholder="Пусто — сцена без голоса">${esc(sc.voice)}</textarea></label>
-      <input type="hidden" data-f="start" value="${sc.start || 0}">
+      ${isVideo(sc.material_id)
+        ? `<label class="scene-field">Видео с секунды<input type="number" data-f="start" value="${sc.start || 0}" min="0" step="any"></label>`
+        : `<input type="hidden" data-f="start" value="0">`}
     </div>
   </div>`;
 }

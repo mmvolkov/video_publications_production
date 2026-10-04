@@ -14,16 +14,19 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import config, storage
+from . import config, media, storage
 
 MAX_SCENES = 12
-MAX_IMAGES_FOR_AI = 20
+MAX_IMAGES_FOR_AI = 24
+FRAMES_PER_VIDEO = 4  # кадров с таймкодами на одно видео — чтобы выбрать сильный момент
 
 SCRIPT_SCHEMA = {
     "type": "object",
     "properties": {
         "title": {"type": "string", "description": "Рабочее название рилса"},
         "cover_text": {"type": "string", "description": "Короткий текст для обложки (до 40 символов)"},
+        "cover_material_id": {"type": "string",
+                              "description": "id самого выразительного фото/видео для обложки или пустая строка"},
         "scenes": {
             "type": "array",
             "items": {
@@ -33,18 +36,22 @@ SCRIPT_SCHEMA = {
                         "type": "string",
                         "description": "id фото/видео из материалов или пустая строка для текстовой карточки",
                     },
-                    "text": {"type": "string", "description": "Текст на экране, до 90 символов"},
+                    "text": {"type": "string",
+                             "description": "Текст на экране, до 6–7 слов; 1–2 ключевых слова в *звёздочках* выделяются цветом"},
                     "voice": {"type": "string", "description": "Фраза диктора для этой сцены или пустая строка, если озвучка выключена"},
                     "duration": {"type": "number", "description": "Длительность сцены в секундах (1.5–8)"},
+                    "start": {"type": "number",
+                              "description": "Для видео — с какой секунды ролика начинать сцену (по кадрам с таймкодами); "
+                                             "для фото и карточек 0"},
                 },
-                "required": ["material_id", "text", "voice", "duration"],
+                "required": ["material_id", "text", "voice", "duration", "start"],
                 "additionalProperties": False,
             },
         },
         "caption": {"type": "string", "description": "Подпись к посту в Instagram"},
         "hashtags": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["title", "cover_text", "scenes", "caption", "hashtags"],
+    "required": ["title", "cover_text", "cover_material_id", "scenes", "caption", "hashtags"],
     "additionalProperties": False,
 }
 
@@ -53,17 +60,24 @@ SYSTEM_PROMPT = """Ты — сильный SMM-продюсер и сценар�
 
 Правила:
 - Первая сцена — хук на 1.5–3 секунды: интрига, боль, цифра или смелое обещание. Без «Привет, сегодня расскажу».
-- Одна сцена = одна мысль. Текст на экране короткий и разговорный, до 90 символов, без хэштегов.
+- Одна сцена = одна мысль. Текст на экране короткий и разговорный: до 6–7 слов, без хэштегов.
+- В тексте на экране выделяй 1–2 ключевых слова звёздочками: «Вы теряете *половину* клиентов» — они будут жёлтыми.
+- Картинка меняется каждые 2–3 секунды: длинную мысль разбивай на несколько сцен с разными кадрами.
 - Используй только material_id из списка. Пустой material_id = текстовая карточка на цветном фоне (для хука, вывода или призыва).
 - Выбирай самые выразительные кадры, порядок — по логике истории (проблема → решение → результат → призыв).
-- Видео-материал можно использовать не дольше его длительности.
-- Последняя сцена — понятный призыв к действию.
+- У видео ты видишь несколько кадров с таймкодами. Выбирай самый сильный момент и ставь его секунду в start;
+  сцена не должна выходить за конец ролика (start + duration ≤ длительность). Один ролик можно брать
+  в нескольких сценах с разных моментов. Для фото и карточек start = 0.
+- Для обложки выбери самый выразительный кадр (cover_material_id) — он должен цеплять в сетке профиля.
+- Последняя сцена — понятный призыв к действию. Хорошо, если финал перекликается с хуком и ролик
+  хочется пересмотреть («закольцованный» рилс).
 - Суммарная длительность — близко к целевой.
 - Подпись к посту: живая, 300–900 символов, с абзацами и эмодзи по делу, в конце призыв. Хэштеги — отдельным списком, 5–12 штук, каждый начинается с «#».
 - Пиши на языке, на котором написан бриф (по умолчанию — русский).
 
 Озвучка (если в брифе сказано, что она включена):
-- В поле voice — живая разговорная фраза диктора для сцены: 1–2 коротких предложения, без хэштегов, эмодзи и списков.
+- В поле voice — живая разговорная фраза диктора для сцены: одно короткое предложение (2–4 секунды),
+  без хэштегов, эмодзи, списков и звёздочек.
 - Озвучка дополняет текст на экране, а не дублирует его слово в слово; на экране — короткий тезис, голосом — мысль целиком.
 - Длительность сцены ставь под фразу: примерно 14 символов фразы в секунду плюс полсекунды.
 - Числа и сокращения пиши так, как их надо произнести («двадцать процентов», а не «20%»).
@@ -142,16 +156,31 @@ def build_messages(project: dict, options: dict) -> list[dict]:
     audio = [m for m in project["materials"] if m["kind"] == "audio"]
 
     content.append({"type": "text", "text": f"\nВИЗУАЛЬНЫЕ МАТЕРИАЛЫ ({len(visual)} шт.):"})
-    for i, m in enumerate(visual):
+    videos = sum(1 for m in visual if m["kind"] == "video")
+    photos = len(visual) - videos
+    per_video = FRAMES_PER_VIDEO
+    if videos and photos + videos * per_video > MAX_IMAGES_FOR_AI:
+        per_video = max(1, (MAX_IMAGES_FOR_AI - photos) // videos)
+    budget = MAX_IMAGES_FOR_AI
+    for m in visual:
         desc = f"material_id={m['id']} | тип: {'фото' if m['kind'] == 'image' else 'видео'}"
         if m["kind"] == "video" and m.get("duration"):
             desc += f" | длительность {m['duration']:.1f} c"
         if m.get("note"):
             desc += f" | комментарий автора: {m['note']}"
         content.append({"type": "text", "text": desc})
-        thumb = pdir / "thumbs" / f"{m['id']}.jpg"
-        if i < MAX_IMAGES_FOR_AI and thumb.exists():
-            content.append(_image_block(thumb))
+        if budget <= 0:
+            continue
+        if m["kind"] == "video":
+            for t, frame in video_frames(pdir, m, min(per_video, budget)):
+                content.append({"type": "text", "text": f"кадр на {t:.1f} с:"})
+                content.append(_image_block(frame))
+                budget -= 1
+        else:
+            thumb = pdir / "thumbs" / f"{m['id']}.jpg"
+            if thumb.exists():
+                content.append(_image_block(thumb))
+                budget -= 1
 
     for m in texts:
         content.append({"type": "text", "text": f"\nТЕКСТОВЫЙ МАТЕРИАЛ «{m.get('name') or 'заметка'}»:\n{m.get('text', '')}"})
@@ -161,6 +190,30 @@ def build_messages(project: dict, options: dict) -> list[dict]:
 
     content.append({"type": "text", "text": "\nСоставь раскадровку рилса по правилам."})
     return [{"role": "user", "content": content}]
+
+
+def video_frames(pdir: Path, m: dict, count: int) -> list[tuple[float, Path]]:
+    """Кадры видео через равные промежутки с таймкодами (кешируются рядом с превью)."""
+    duration = float(m.get("duration") or 0)
+    frames: list[tuple[float, Path]] = []
+    if count > 1 and duration >= 1.5:
+        for k in range(count):
+            t = round(duration * (k + 0.5) / count, 1)
+            path = pdir / "thumbs" / f"{m['id']}_t{int(t * 10):05d}.jpg"
+            if not path.exists():
+                try:
+                    media.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.2f}", "-i", str(pdir / "materials" / m["file"]),
+                               "-frames:v", "1", "-vf", "scale=480:480:force_original_aspect_ratio=decrease",
+                               str(path)], timeout=60)
+                except RuntimeError:
+                    continue
+            if path.exists():
+                frames.append((t, path))
+    if not frames:  # короткое видео или кадры не извлеклись — обычное превью (снято на ~1 с)
+        thumb = pdir / "thumbs" / f"{m['id']}.jpg"
+        if thumb.exists():
+            frames.append((min(1.0, duration / 2), thumb))
+    return frames
 
 
 def generate_with_claude(project: dict, options: dict) -> dict:
@@ -311,19 +364,24 @@ def normalize_script(script: dict, project: dict) -> dict:
             duration = 3.0
         duration = max(1.0, min(15.0, duration))
         m = materials.get(mid)
+        try:
+            start = max(0.0, float(s.get("start") or 0))
+        except (TypeError, ValueError):
+            start = 0.0
         if m and m["kind"] == "video" and m.get("duration"):
-            duration = min(duration, max(1.0, m["duration"]))
+            start = min(start, max(0.0, m["duration"] - 1.0))
+            duration = min(duration, max(1.0, m["duration"] - start))
         text = str(s.get("text") or "").strip()
         voice = str(s.get("voice") or "").strip()
         if not mid and not text and not voice:
             continue
         scene = {"material_id": mid, "text": text, "voice": voice, "duration": round(duration, 2)}
-        start = float(s.get("start") or 0)
         if m and m["kind"] == "video" and start > 0:
-            scene["start"] = min(start, max(0.0, (m.get("duration") or 0) - 0.5))
+            scene["start"] = round(start, 2)
         scenes.append(scene)
     if not scenes:
         raise ValueError("В сценарии нет ни одной сцены")
+    cover_id = str(script.get("cover_material_id") or "").strip()
     hashtags = []
     for tag in script.get("hashtags") or []:
         tag = str(tag).strip().replace(" ", "")
@@ -332,6 +390,7 @@ def normalize_script(script: dict, project: dict) -> dict:
     return {
         "title": str(script.get("title") or project["title"]),
         "cover_text": str(script.get("cover_text") or ""),
+        "cover_material_id": cover_id if cover_id in materials else "",
         "scenes": scenes,
         "caption": str(script.get("caption") or ""),
         "hashtags": hashtags,

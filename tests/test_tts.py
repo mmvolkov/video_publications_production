@@ -167,7 +167,7 @@ def test_edge_rate_retry_and_slowdown(monkeypatch, tmp_path):
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=duration=1", str(tone)], check=True)
 
     class FakeCommunicate:
-        def __init__(self, text, voice, rate="+0%", boundary="SentenceBoundary"):
+        def __init__(self, text, voice, rate="+0%", boundary="SentenceBoundary", proxy=None):
             calls.append(rate)
 
         async def stream(self):

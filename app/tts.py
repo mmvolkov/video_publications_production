@@ -245,6 +245,9 @@ class EdgeProvider(Provider):
                 if getattr(exc, "status", None) in (401, 403):
                     # Отказ сервиса (например, Microsoft не пускает IP дата-центра) — повторы не помогут
                     raise TTSError(f"Edge TTS: доступ запрещён (HTTP {exc.status})") from exc
+                if type(exc).__name__ == "NoAudioReceived":
+                    # Сервис отвечает, но речь не синтезирует — повторы только задерживают запасной голос
+                    raise TTSError("Edge TTS: сервис не вернул звук (NoAudioReceived)") from exc
                 time.sleep(1.5 * (attempt + 1))
         else:
             raise TTSError(f"Edge TTS не ответил после 5 попыток: {last_error}")

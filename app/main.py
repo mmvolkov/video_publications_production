@@ -99,6 +99,8 @@ class VoiceOptions(BaseModel):
     # Подача голоса (только свой TTS): None — из пресета голоса, "" — без инструкции.
     tts_instruct: Optional[str] = Field(None, max_length=300)
     karaoke: bool = True
+    # родной звук видео-материалов (под голосом диктора — тише)
+    clip_audio: bool = False
 
 
 class ReelIn(VoiceOptions):
@@ -118,6 +120,7 @@ class Scene(BaseModel):
 class ScriptIn(BaseModel):
     title: str = ""
     cover_text: str = ""
+    cover_material_id: str = ""
     scenes: list[Scene] = Field(..., min_length=1, max_length=30)
     caption: str = ""
     hashtags: list[str] = []

@@ -68,7 +68,7 @@ def test_edge_returns_real_word_timings(monkeypatch, tmp_path):
     import edge_tts
 
     class FakeCommunicate:
-        def __init__(self, text, voice, rate="+0%", boundary="SentenceBoundary"):
+        def __init__(self, text, voice, rate="+0%", boundary="SentenceBoundary", proxy=None):
             assert boundary == "WordBoundary"
 
         async def stream(self):

@@ -62,6 +62,7 @@ def render_reel(project: dict, reel: dict) -> None:
         progress=progress,
         voiceover=voiceover_settings(options),
         karaoke=bool(options.get("voiceover") and options.get("karaoke", True)),
+        clip_audio=bool(options.get("clip_audio")),
     )
     # сцены могли удлиниться под озвучку — сохраняем реальные длительности в сценарий
     script = dict(reel["script"])

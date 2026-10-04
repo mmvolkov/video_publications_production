@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core ca-certificates curl \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-montserrat ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Официальный Claude Code CLI — пишет сценарии по подписке Claude (AI_ENGINE=claude-code).
