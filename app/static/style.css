@@ -35,7 +35,7 @@ h2 { font-size: 18px; }
 .muted { color: var(--muted); font-size: 13px; }
 
 .topbar {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  display: flex; align-items: center; justify-content: flex-start; gap: 16px; flex-wrap: wrap;
   padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 5;
 }
@@ -43,6 +43,10 @@ h2 { font-size: 18px; }
 .pill { font-size: 13px; padding: 4px 10px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); }
 .pill.ok { color: var(--ok); border-color: currentColor; }
 .pill.warn { color: #b7791f; border-color: currentColor; }
+.pill.ok, .pill.warn { font-weight: 600; }
+.engine-note { font-size: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border); }
+.engine-note.ok { color: var(--ok); border-color: currentColor; }
+.engine-note.warn { color: #b7791f; border-color: currentColor; }
 
 .layout { display: grid; grid-template-columns: 260px 1fr; min-height: calc(100vh - 56px); }
 .sidebar { padding: 16px; border-right: 1px solid var(--border); background: var(--surface); }

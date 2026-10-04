@@ -39,10 +39,15 @@ async function guarded(fn) {
 async function loadStatus() {
   const s = await api("/api/status");
   const el = $("#ai-status");
-  el.textContent = s.ai ? `Сценарии: ${s.engine_label}` : "Без ИИ: черновые сценарии";
+  el.textContent = s.ai ? `✍️ Сценарии: ${s.engine_label}` : "⚠️ Без ИИ: черновые сценарии";
   el.className = "pill " + (s.ai ? "ok" : "warn");
   el.title = s.ai ? `Модель: ${s.model}`
     : "Задайте ANTHROPIC_API_KEY или войдите в Claude Code (CLAUDE_CODE_OAUTH_TOKEN), чтобы сценарии писал Claude";
+  // то же — прямо над кнопкой «Сделать рилс», чтобы было видно, кто напишет сценарий
+  const note = $("#engine-note");
+  note.textContent = s.ai ? `✍️ Сценарий напишет: ${s.engine_label} · модель: ${s.model}`
+    : "⚠️ ИИ не подключён — сценарий будет черновым (из ваших комментариев и текстов)";
+  note.className = "engine-note span-2 " + (s.ai ? "ok" : "warn");
 }
 
 async function loadProjects() {
