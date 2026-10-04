@@ -58,6 +58,34 @@ docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
 
 Материалы и готовые ролики лежат в `./data`.
 
+## Выход в интернет через прокси
+
+С IP российского сервера `api.anthropic.com` отвечает `403 Request not allowed`, а установщик Claude Code
+(`claude.ai/install.sh`) отдаёт HTML вместо скрипта. Поэтому на сервере Pythagoras наружу ходят через общий
+`xray-proxy` платформы и сайт, и сборка образа: прокси сам решает, какой домен отправить в туннель
+(`anthropic.com`, `claude.ai`, OpenAI, Telegram), а какой — напрямую. Состояние на 04.10.2026, проверено
+живыми запросами из контейнера.
+
+| Что ходит наружу | Через что | Где задано |
+|---|---|---|
+| Сайт в работе: Claude Code CLI, httpx, edge-tts | `http://xray-proxy:8080` | `environment` в `docker-compose.yml` |
+| Сборка образа: установщик Claude Code, pip, apt | `http://127.0.0.1:8118` | `build.args` в `docker-compose.yml` |
+| Свой TTS, Traefik, localhost | напрямую | `NO_PROXY` |
+
+Оба адреса принадлежат платформе Pythagoras: `xray-proxy` — контейнер в сети `dedicated_server_default`,
+`127.0.0.1:8118` — его же порт, опубликованный на loopback сервера. На машине без такого прокси обе
+настройки убираются (или заменяются своим прокси), остальное работает без изменений.
+
+Особенности:
+- BuildKit не подключает сборку к docker-сети (`network mode "..." not supported by buildkit`), поэтому
+  имя `xray-proxy` при сборке не резолвится и образ собирается с `network: host`. Значения прокси из
+  `build.args` в образ не попадают.
+- aiohttp, на котором работает `edge-tts`, переменные окружения прокси не читает — прокси передаётся
+  в `Communicate(proxy=…)` явно (`app/tts.py`). Новая библиотека на aiohttp потребует того же.
+- Маршрут проверяется логом прокси: `docker logs --since 5m xray-proxy` печатает
+  `accepted //api.anthropic.com:443 [http-in -> aeza-http]` для туннеля и `[http-in >> direct]` для
+  прямого выхода.
+
 ### Локально
 
 Нужны Python 3.10+ и ffmpeg (`brew install ffmpeg` / `apt install ffmpeg fonts-dejavu-core`).
@@ -126,6 +154,11 @@ CLI не передаётся). Запросы расходуют лимиты �
 
 Провайдер без ключа виден в списке, но неактивен. По умолчанию выбирается `TTS_DEFAULT_PROVIDER`
 (если он настроен), иначе первый доступный.
+
+> **Microsoft edge-tts на 04.10.2026 не синтезирует речь** — `NoAudioReceived` на всех попытках, при том
+> что список голосов тот же сервис отдаёт. Проверено с трёх выходных IP (напрямую, через туннель и через
+> внешний прокси) на версии `edge-tts 7.2.8`, последней на PyPI: дело в сервисе Microsoft, а не в сети.
+> Рабочий провайдер — `corp`.
 
 Особенности:
 - **Свой TTS.** Запрос `POST {base}/audio/speech` с телом
