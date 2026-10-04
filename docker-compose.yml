@@ -1,6 +1,15 @@
 services:
   reels:
-    build: .
+    build:
+      context: .
+      # BuildKit не умеет подключать сборку к сети compose, а установщик Claude Code
+      # из региона сервера отдаёт HTML вместо скрипта. Поэтому собираем с сетью хоста
+      # и ходим в туннель через 127.0.0.1:8118 — там опубликован xray-proxy основного
+      # стека (docker-compose.hermes.yml).
+      network: host
+      args:
+        HTTPS_PROXY: http://127.0.0.1:8118
+        HTTP_PROXY: http://127.0.0.1:8118
     image: reels-studio:local
     container_name: reels-studio
     restart: unless-stopped

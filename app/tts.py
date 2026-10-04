@@ -218,7 +218,10 @@ class EdgeProvider(Provider):
 
         async def stream() -> list[dict]:
             # boundary="WordBoundary" — реальные тайминги каждого слова (по ним строятся субтитры)
-            communicate = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
+            # aiohttp внутри edge-tts переменные окружения прокси не читает — передаём явно,
+            # иначе трафик уходит мимо xray-proxy (см. HTTPS_PROXY в docker-compose.yml).
+            proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or None
+            communicate = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary", proxy=proxy)
             words = []
             with out.open("wb") as f:
                 async for chunk in communicate.stream():
