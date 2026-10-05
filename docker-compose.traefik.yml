@@ -1,0 +1,26 @@
+# Overlay: публикация Reels Studio через существующий Traefik на домен
+#   ${REELS_DOMAIN:-reels.cloudsmasters.ru}  (TLS via Let's Encrypt).
+#
+# Запуск на сервере (где есть сеть dedicated_server_default — сеть Traefik основного стека):
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build
+#
+# В этой же сети живёт контейнер tts, поэтому свой TTS доступен напрямую, без интернета:
+#   CORP_TTS_BASE_URL=http://tts:8000/v1
+
+services:
+  reels:
+    networks:
+      - default
+      - webproxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dedicated_server_default
+      - traefik.http.routers.reels.rule=Host(`${REELS_DOMAIN:-reels.cloudsmasters.ru}`)
+      - traefik.http.routers.reels.entrypoints=websecure
+      - traefik.http.routers.reels.tls.certresolver=letsencrypt
+      - traefik.http.services.reels.loadbalancer.server.port=8000
+
+networks:
+  webproxy:
+    external: true
+    name: dedicated_server_default

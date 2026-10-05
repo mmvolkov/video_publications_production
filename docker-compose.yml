@@ -1,0 +1,40 @@
+services:
+  reels:
+    build:
+      context: .
+      # BuildKit не умеет подключать сборку к сети compose, а установщик Claude Code
+      # из региона сервера отдаёт HTML вместо скрипта. Поэтому собираем с сетью хоста
+      # и ходим в туннель через 127.0.0.1:8118 — там опубликован xray-proxy основного
+      # стека (docker-compose.hermes.yml).
+      network: host
+      args:
+        HTTPS_PROXY: http://127.0.0.1:8118
+        HTTP_PROXY: http://127.0.0.1:8118
+    image: reels-studio:local
+    container_name: reels-studio
+    restart: unless-stopped
+    env_file: .env
+    # Весь исходящий трафик — через xray-proxy основного стека (как у hermes-3):
+    # контейнер уже в сети dedicated_server_default, имя xray-proxy резолвится оттуда.
+    # Сам xray решает маршрут: anthropic.com / claude.ai идут в туннель (с IP сервера
+    # Anthropic отвечает 403 «Request not allowed»), остальное — напрямую.
+    # Свои сервисы и localhost мимо прокси (NO_PROXY).
+    environment:
+      - HTTPS_PROXY=http://xray-proxy:8080
+      - https_proxy=http://xray-proxy:8080
+      - HTTP_PROXY=http://xray-proxy:8080
+      - http_proxy=http://xray-proxy:8080
+      - NO_PROXY=tts,tts.cloudsmasters.ru,traefik,localhost,127.0.0.1,.local
+      - no_proxy=tts,tts.cloudsmasters.ru,traefik,localhost,127.0.0.1,.local
+    ports:
+      # 8123–8127 на сервере заняты (transcriptions, diarization, ai-kb, tts)
+      - "${REELS_PORT:-8128}:8000"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# Домен через Traefik: docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build

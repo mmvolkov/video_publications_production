@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.env
+data/
+
+# промежуточные файлы сборки рилсов
+out/*/work*/
+out/*/voice_v2/

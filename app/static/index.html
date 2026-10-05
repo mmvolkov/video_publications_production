@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reels Studio</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🎬 Reels Studio</div>
+    <div id="ai-status" class="pill" title="Кто пишет сценарии">Сценарии: проверяю…</div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <button id="new-project" class="btn primary wide">+ Новый проект</button>
+      <nav id="project-list" class="project-list"></nav>
+    </aside>
+
+    <main id="main">
+      <section id="empty" class="empty">
+        <h1>Материалы → рилс для Instagram</h1>
+        <p>Создайте проект, загрузите фото, видео, тексты и музыку — Claude напишет сценарий,
+          а сервис соберёт вертикальное видео 1080×1920 с титрами, обложкой и подписью к посту.</p>
+        <ol>
+          <li>Опишите бриф: о чём рилс, для кого, какой призыв.</li>
+          <li>Добавьте материалы и короткие комментарии к ним.</li>
+          <li>Нажмите «Сделать рилс», поправьте сценарий при желании и скачайте видео.</li>
+        </ol>
+      </section>
+
+      <section id="project" class="hidden">
+        <div class="project-head">
+          <input id="project-title" class="title-input" maxlength="200" aria-label="Название проекта">
+          <button id="delete-project" class="btn ghost danger" title="Удалить проект">Удалить проект</button>
+        </div>
+
+        <details class="card" id="brief-card">
+          <summary><h2>1. Бриф</h2><span class="muted">о чём рилс и чего он должен добиться</span></summary>
+          <form id="brief-form" class="grid-form">
+            <label>Тема / продукт<textarea name="topic" rows="2" placeholder="Например: онлайн-школа английского для IT-специалистов"></textarea></label>
+            <label>Цель<input name="goal" placeholder="Заявки в директ, подписки, продажи…"></label>
+            <label>Аудитория<input name="audience" placeholder="Кто будет смотреть"></label>
+            <label>Тон<input name="tone" placeholder="Дерзко, экспертно, с юмором…"></label>
+            <label>Призыв к действию<input name="cta" placeholder="Пишите «ХОЧУ» в директ"></label>
+            <div class="form-actions"><button class="btn" type="submit">Сохранить бриф</button><span id="brief-saved" class="muted"></span></div>
+          </form>
+        </details>
+
+        <div class="card">
+          <h2>2. Материалы</h2>
+          <label id="dropzone" class="dropzone">
+            <input id="file-input" type="file" multiple accept="image/*,video/*,audio/*,.txt,.md,.csv" hidden>
+            <strong>Перетащите файлы сюда</strong> или нажмите, чтобы выбрать
+            <span class="muted">Фото, видео, музыка (mp3/m4a/wav), тексты (.txt/.md)</span>
+          </label>
+          <div id="upload-progress" class="progress hidden"><div></div></div>
+          <form id="note-form" class="note-form">
+            <textarea name="text" rows="3" placeholder="Или вставьте текст: тезисы, отзыв клиента, описание оффера, цифры…"></textarea>
+            <button class="btn" type="submit">Добавить текст</button>
+          </form>
+          <div id="materials" class="materials"></div>
+        </div>
+
+        <div class="card">
+          <h2>3. Сделать рилс</h2>
+          <form id="reel-form" class="reel-form">
+            <label>Длительность
+              <select name="duration">
+                <option value="15">15 секунд</option>
+                <option value="30" selected>30 секунд</option>
+                <option value="45">45 секунд</option>
+                <option value="60">60 секунд</option>
+              </select>
+            </label>
+            <label>Музыка
+              <select name="music_id" id="music-select"></select>
+            </label>
+            <div class="span-2 voice-box" id="voice-controls"></div>
+            <label class="span-2">Пожелания к этому ролику (необязательно)
+              <input name="wishes" placeholder="Например: сделай акцент на отзывах, начни с цифры">
+            </label>
+            <div id="engine-note" class="engine-note span-2"></div>
+            <button class="btn primary span-2" type="submit">✨ Сделать рилс</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Готовые рилсы</h2>
+          <div id="reels" class="reels"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="editor">
+    <form method="dialog" id="editor-form">
+      <header class="dialog-head">
+        <h2>Сценарий</h2>
+        <button class="btn ghost" value="cancel" formnovalidate>✕</button>
+      </header>
+      <label>Текст на обложке<input name="cover_text" maxlength="80"></label>
+      <div class="voice-box" id="editor-voice"></div>
+      <div id="scene-list" class="scene-list"></div>
+      <button type="button" id="add-scene" class="btn ghost">+ Сцена</button>
+      <label>Подпись к посту<textarea name="caption" rows="6"></textarea></label>
+      <label>Хэштеги<input name="hashtags" placeholder="#reels #маркетинг"></label>
+      <footer class="dialog-foot">
+        <span class="muted"><span id="editor-total"></span><br>Сцены с озвучкой длятся столько, сколько говорит диктор.</span>
+        <button class="btn primary" value="save">Сохранить и пересобрать</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
