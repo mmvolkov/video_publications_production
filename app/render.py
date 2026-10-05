@@ -67,19 +67,42 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
 
 MARK = re.compile(r"\*([^*\n]+)\*")
 
-Word = tuple[str, bool]  # (слово, выделено цветом)
+NBSP = "\u00a0"
+SPACES = re.compile(r"([ \t]+)")  # только обычные пробелы: неразрывный (в числах) не разрывает строку
+
+# Токен титра: (текст, выделен цветом, приклеен к предыдущему без пробела — как «?» после *слова*)
+Word = tuple[str, bool, bool]
+
+
+def _glue_numbers(text: str) -> str:
+    """«$1 000 000» не разрывается на строки: пробелы между группами цифр — неразрывные."""
+    return re.sub(r"(?<=\d) (?=\d{3}(?!\d))", NBSP, text)
 
 
 def parse_marked(text: str) -> list[Word]:
-    """«Это *очень важно*» → [("Это", False), ("очень", True), ("важно", True)]."""
-    words: list[Word] = []
+    """«Решение *гладкое*?» → [("Решение", False, False), ("гладкое", True, False), ("?", False, True)]."""
+    tokens: list[Word] = []
+    space = True  # был ли пробел перед следующим токеном
+
+    def add(segment: str, accent: bool) -> None:
+        nonlocal space
+        for part in SPACES.split(segment):
+            if not part:
+                continue
+            if part.isspace():
+                space = True
+                continue
+            tokens.append((part, accent, bool(tokens) and not space))
+            space = False
+
+    text = _glue_numbers(text)
     pos = 0
     for m in MARK.finditer(text):
-        words += [(w, False) for w in text[pos:m.start()].split()]
-        words += [(w, True) for w in m.group(1).split()]
+        add(text[pos:m.start()], False)
+        add(m.group(1), True)
         pos = m.end()
-    words += [(w, False) for w in text[pos:].split()]
-    return words
+    add(text[pos:], False)
+    return tokens
 
 
 def strip_marks(text: str) -> str:
@@ -87,22 +110,28 @@ def strip_marks(text: str) -> str:
 
 
 def _join(line: list[Word]) -> str:
-    return " ".join(w for w, _ in line)
+    return "".join(("" if i == 0 or glue else " ") + word for i, (word, _, glue) in enumerate(line))
 
 
 def wrap_words(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[list[Word]]:
     lines: list[list[Word]] = []
     for paragraph in text.split("\n"):
-        words = parse_marked(paragraph)
-        if not words:
+        # приклеенные токены (знаки после *слова*) переносятся только вместе со своим словом
+        units: list[list[Word]] = []
+        for token in parse_marked(paragraph):
+            if token[2] and units:
+                units[-1].append(token)
+            else:
+                units.append([token])
+        if not units:
             continue
-        line = [words[0]]
-        for word in words[1:]:
-            if font.getlength(_join(line + [word])) <= max_width:
-                line.append(word)
+        line = list(units[0])
+        for unit in units[1:]:
+            if font.getlength(_join(line + unit)) <= max_width:
+                line += unit
             else:
                 lines.append(line)
-                line = [word]
+                line = [(unit[0][0], unit[0][1], False), *unit[1:]]
         lines.append(line)
     return lines
 
@@ -125,11 +154,13 @@ def _draw_line(draw: ImageDraw.ImageDraw, line: list[Word], font: ImageFont.Free
                shadow: bool = False) -> None:
     space = font.getlength(" ")
     x = (W - font.getlength(_join(line))) / 2
-    for word, accent in line:
+    for i, (word, accent, glue) in enumerate(line):
+        if i and not glue:
+            x += space
         if shadow:
             draw.text((x + 4, y + 5), word, font=font, fill=(0, 0, 0, 150))
         draw.text((x, y), word, font=font, fill=ACCENT if accent else WHITE)
-        x += font.getlength(word) + space
+        x += font.getlength(word)
 
 
 def text_layer(text: str, style: str, karaoke: bool = False) -> Image.Image:

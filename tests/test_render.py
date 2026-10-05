@@ -11,11 +11,31 @@ FF = ["ffmpeg", "-y", "-v", "error"]
 
 def test_keywords_in_stars():
     assert render.parse_marked("Вы теряете *половину* клиентов") == [
-        ("Вы", False), ("теряете", False), ("половину", True), ("клиентов", False)]
-    assert render.parse_marked("*Два слова* и всё") == [("Два", True), ("слова", True), ("и", False), ("всё", False)]
+        ("Вы", False, False), ("теряете", False, False), ("половину", True, False), ("клиентов", False, False)]
+    assert render.parse_marked("*Два слова* и всё") == [
+        ("Два", True, False), ("слова", True, False), ("и", False, False), ("всё", False, False)]
     assert render.strip_marks("Как *удвоить* продажи") == "Как удвоить продажи"
     font = render._font(60)
     assert render.wrap_text("Очень *длинный* текст " * 6, font, 500)[0].count("*") == 0
+
+
+def test_punctuation_sticks_to_marked_word():
+    tokens = render.parse_marked("Решение всегда *гладкое*? «*Да*», *нет*!")
+    assert render._join(tokens) == "Решение всегда гладкое? «Да», нет!"
+    assert ("?", False, True) in tokens and ("Да", True, True) in tokens
+    # знак не уезжает на следующую строку отдельно от слова
+    font = render._font(60)
+    for width in range(150, 700, 25):
+        assert all(not line.startswith(("?", "!", ",", "»")) for line in render.wrap_text("Слово *гладкое*? Ещё", font, width))
+
+
+def test_numbers_do_not_break():
+    assert render._join(render.parse_marked("Задача на *$1 000 000*")) == "Задача на $1\u00a0000\u00a0000"
+    assert render._join(render.parse_marked("10 000 агентов за 88 часов")) == "10\u00a0000 агентов за 88 часов"
+    assert render._join(render.parse_marked("в 2024 году 12345 раз")) == "в 2024 году 12345 раз"
+    font = render._font(80)
+    lines = render.wrap_text("ИИ решил задачу на *$1 000 000*", font, 520)
+    assert any("$1\u00a0000\u00a0000" in line for line in lines)
 
 
 def test_text_animation_pops(tmp_path):
